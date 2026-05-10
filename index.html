@@ -1,0 +1,1457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>投标文件智能填充系统</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            background: #f5f7fa;
+            color: #1a1a1a;
+            line-height: 1.5;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 24px 32px;
+        }
+
+        /* Header */
+        .header {
+            margin-bottom: 24px;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #1a1a1a;
+            margin-bottom: 8px;
+        }
+
+        .header-subtitle {
+            font-size: 13px;
+            color: #666;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .header-subtitle .arrow {
+            color: #ccc;
+        }
+
+        /* Main Layout */
+        .main-layout {
+            display: grid;
+            grid-template-columns: 400px 1fr;
+            gap: 16px;
+            align-items: start;
+        }
+
+        /* Panel Card */
+        .panel {
+            background: #ffffff;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.06), 0 2px 8px rgba(0,0,0,0.04);
+        }
+
+        .panel-title {
+            font-size: 15px;
+            font-weight: 500;
+            color: #1a1a1a;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .panel-icon {
+            width: 20px;
+            height: 20px;
+            color: #1a1a1a;
+        }
+
+        /* Section Title */
+        .section-title {
+            font-size: 13px;
+            font-weight: 500;
+            color: #1a1a1a;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .section-number {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #1677ff;
+            color: #fff;
+            font-size: 11px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Upload Area */
+        .upload-area {
+            border: 1px dashed #d9d9d9;
+            border-radius: 6px;
+            padding: 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background: #fafafa;
+        }
+
+        .upload-area:hover {
+            border-color: #1677ff;
+            background: #f0f5ff;
+        }
+
+        .upload-area.dragover {
+            border-color: #1677ff;
+            background: #e6f4ff;
+        }
+
+        .upload-icon {
+            width: 32px;
+            height: 32px;
+            margin-bottom: 8px;
+            color: #999;
+        }
+
+        .upload-text {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 4px;
+        }
+
+        .upload-hint {
+            font-size: 12px;
+            color: #999;
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        /* File Card */
+        .file-card {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            background: #f5f5f5;
+            border-radius: 6px;
+            border: 1px solid #e8e8e8;
+        }
+
+        .file-icon {
+            width: 36px;
+            height: 36px;
+            background: #1677ff;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .file-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .file-name {
+            font-size: 13px;
+            font-weight: 500;
+            color: #1a1a1a;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .file-size {
+            font-size: 12px;
+            color: #999;
+        }
+
+        .file-remove {
+            width: 24px;
+            height: 24px;
+            border: none;
+            background: transparent;
+            color: #999;
+            cursor: pointer;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+
+        .file-remove:hover {
+            background: #ff4d4f;
+            color: #fff;
+        }
+
+        /* Form Elements */
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group:last-child {
+            margin-bottom: 0;
+        }
+
+        .textarea-wrapper {
+            position: relative;
+        }
+
+        .info-textarea {
+            width: 100%;
+            min-height: 180px;
+            padding: 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            font-size: 13px;
+            line-height: 1.6;
+            resize: vertical;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+
+        .info-textarea:focus {
+            outline: none;
+            border-color: #1677ff;
+            box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.1);
+        }
+
+        .info-textarea::placeholder {
+            color: #bfbfbf;
+        }
+
+        .char-count {
+            position: absolute;
+            bottom: 8px;
+            right: 12px;
+            font-size: 11px;
+            color: #999;
+            background: rgba(255,255,255,0.95);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        /* Progress Bar */
+        .progress-wrapper {
+            margin: 16px 0;
+            padding: 12px;
+            background: #f5f5f5;
+            border-radius: 6px;
+            display: none;
+        }
+
+        .progress-wrapper.active {
+            display: block;
+        }
+
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+
+        .progress-text {
+            color: #666;
+        }
+
+        .progress-percent {
+            color: #1677ff;
+            font-weight: 500;
+        }
+
+        .progress-bar {
+            height: 6px;
+            background: #e8e8e8;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: #1677ff;
+            border-radius: 3px;
+            transition: width 0.3s ease;
+        }
+
+        .progress-eta {
+            font-size: 11px;
+            color: #999;
+            margin-top: 6px;
+        }
+
+        /* Buttons */
+        .btn {
+            width: 100%;
+            padding: 10px 16px;
+            font-size: 13px;
+            font-weight: 500;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .btn-primary {
+            background: #1677ff;
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background: #4096ff;
+        }
+
+        .btn-primary:active {
+            background: #0958d9;
+        }
+
+        .btn-primary:disabled {
+            background: #d9d9d9;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: #fff;
+            color: #666;
+            border: 1px solid #d9d9d9;
+        }
+
+        .btn-secondary:hover {
+            border-color: #1677ff;
+            color: #1677ff;
+        }
+
+        .btn-success {
+            background: #52c41a;
+            color: #fff;
+        }
+
+        .btn-success:hover {
+            background: #73d13d;
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .btn-row .btn {
+            flex: 1;
+        }
+
+        /* Hint Box */
+        .hint-box {
+            margin-top: 16px;
+            padding: 12px;
+            background: #fffbe6;
+            border: 1px solid #ffe58f;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #8c6c1d;
+            line-height: 1.6;
+            display: flex;
+            gap: 8px;
+            align-items: flex-start;
+        }
+
+        .hint-box-icon {
+            flex-shrink: 0;
+            margin-top: 1px;
+        }
+
+        /* Steps List - Clean Design */
+        .steps-container {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .step-card {
+            background: #fff;
+            border-radius: 6px;
+            border: 1px solid #e8e8e8;
+            overflow: hidden;
+            transition: all 0.2s ease;
+        }
+
+        .step-card:hover {
+            border-color: #d9d9d9;
+        }
+
+        .step-card.active {
+            border-color: #1677ff;
+            background: #f0f5ff;
+        }
+
+        .step-card.completed {
+            border-color: #b7eb8f;
+            background: #f6ffed;
+        }
+
+        .step-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 16px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .step-header:hover {
+            background: rgba(0,0,0,0.02);
+        }
+
+        .step-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            flex-shrink: 0;
+            transition: all 0.2s ease;
+        }
+
+        .step-icon.pending {
+            background: #f5f5f5;
+            color: #999;
+        }
+
+        .step-icon.running {
+            background: #1677ff;
+            color: #fff;
+        }
+
+        .step-icon.completed {
+            background: #52c41a;
+            color: #fff;
+        }
+
+        .step-icon.error {
+            background: #ff4d4f;
+            color: #fff;
+        }
+
+        .step-info {
+            flex: 1;
+        }
+
+        .step-title {
+            font-size: 14px;
+            font-weight: 500;
+            color: #1a1a1a;
+            margin-bottom: 2px;
+        }
+
+        .step-desc {
+            font-size: 12px;
+            color: #999;
+        }
+
+        .step-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .step-badge {
+            font-size: 12px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .step-badge.pending {
+            background: #f5f5f5;
+            color: #999;
+        }
+
+        .step-badge.running {
+            background: #e6f4ff;
+            color: #1677ff;
+        }
+
+        .step-badge.completed {
+            background: #f6ffed;
+            color: #52c41a;
+        }
+
+        .step-badge.error {
+            background: #fff2f0;
+            color: #ff4d4f;
+        }
+
+        .step-toggle {
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #999;
+            transition: transform 0.2s ease;
+        }
+
+        .step-toggle.expanded {
+            transform: rotate(180deg);
+        }
+
+        /* Step Content */
+        .step-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: all 0.3s ease;
+            background: #fafafa;
+        }
+
+        .step-content.expanded {
+            max-height: 400px;
+        }
+
+        .step-content-inner {
+            padding: 12px 16px 16px 60px;
+        }
+
+        .content-box {
+            background: #fff;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            padding: 12px;
+            font-size: 13px;
+            color: #666;
+            line-height: 1.6;
+            max-height: 280px;
+            overflow-y: auto;
+        }
+
+        .content-box.placeholder {
+            color: #999;
+            background: #fafafa;
+        }
+
+        /* Tags Grid */
+        .tags-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .tag-chip {
+            padding: 4px 10px;
+            background: #f0f5ff;
+            color: #1677ff;
+            border-radius: 4px;
+            font-size: 12px;
+            border: 1px solid #d6e4ff;
+        }
+
+        /* Match Result */
+        .match-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .match-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #fff;
+            border-radius: 4px;
+            border: 1px solid #e8e8e8;
+        }
+
+        .match-tag {
+            font-size: 11px;
+            font-weight: 500;
+            color: #1677ff;
+            background: #f0f5ff;
+            padding: 2px 6px;
+            border-radius: 4px;
+            flex-shrink: 0;
+        }
+
+        .match-arrow {
+            color: #ccc;
+            font-size: 11px;
+        }
+
+        .match-value {
+            font-size: 12px;
+            color: #1a1a1a;
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 12px;
+            background: #fff;
+            border-radius: 6px;
+            border: 1px solid #e8e8e8;
+        }
+
+        .stat-value {
+            font-size: 20px;
+            font-weight: 600;
+            color: #1677ff;
+            margin-bottom: 4px;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #999;
+        }
+
+        /* Spinner */
+        .spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        .spinner-blue {
+            border: 2px solid rgba(22, 119, 255, 0.2);
+            border-top-color: #1677ff;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Error Message */
+        .error-message {
+            margin-top: 12px;
+            padding: 12px;
+            background: #fff2f0;
+            border: 1px solid #ffccc7;
+            border-radius: 6px;
+            color: #cf1322;
+            font-size: 13px;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .main-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>投标文件智能填充系统</h1>
+            <div class="header-subtitle">
+                <span>AI辅助打标</span>
+                <span class="arrow">→</span>
+                <span>标签提取</span>
+                <span class="arrow">→</span>
+                <span>企业信息匹配</span>
+                <span class="arrow">→</span>
+                <span>自动填充</span>
+            </div>
+        </div>
+
+        <!-- Main Layout -->
+        <div class="main-layout">
+            <!-- Left Panel - Controls -->
+            <div class="panel">
+                <div class="panel-title">
+                    <svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                        <polyline points="10 9 9 9 8 9"/>
+                    </svg>
+                    文档处理
+                </div>
+
+                <!-- Step 1: File Upload -->
+                <div class="form-group">
+                    <div class="section-title">
+                        <span class="section-number">1</span>
+                        上传 Word 模板文件
+                    </div>
+
+                    <div class="upload-area" id="uploadArea">
+                        <input type="file" class="file-input" id="fileInput" accept=".docx">
+                        <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="17 8 12 3 7 8"/>
+                            <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                        <div class="upload-text">点击或拖拽文件到此处</div>
+                        <div class="upload-hint">仅支持 .docx 格式</div>
+                    </div>
+
+                    <div class="file-card" id="fileCard" style="display: none;">
+                        <div class="file-icon">W</div>
+                        <div class="file-info">
+                            <div class="file-name" id="fileName">投标文件模板.docx</div>
+                            <div class="file-size" id="fileSize">245 KB</div>
+                        </div>
+                        <button class="file-remove" id="removeFile" title="移除文件">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Step 2: Company Info -->
+                <div class="form-group">
+                    <div class="section-title">
+                        <span class="section-number">2</span>
+                        输入企业信息
+                    </div>
+
+                    <div class="textarea-wrapper">
+                        <textarea class="info-textarea" id="companyInfo" placeholder="请粘贴或输入企业信息..."></textarea>
+                        <span class="char-count" id="charCount">0 字符</span>
+                    </div>
+                </div>
+
+                <!-- Progress Bar -->
+                <div class="progress-wrapper" id="progressWrapper">
+                    <div class="progress-header">
+                        <span class="progress-text">处理进度</span>
+                        <span class="progress-percent" id="progressPercent">28%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                    </div>
+                    <div class="progress-eta" id="progressEta">预计剩余时间：约 1 分钟</div>
+                </div>
+
+                <!-- Error Message -->
+                <div class="error-message" id="errorMessage" style="display: none;"></div>
+
+                <!-- Step 3: Action -->
+                <div class="section-title">
+                    <span class="section-number">3</span>
+                    开始处理
+                </div>
+
+                <button class="btn btn-primary" id="fillBtn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="5 3 19 12 5 21 5 3"/>
+                    </svg>
+                    <span>开始智能处理</span>
+                </button>
+
+                <div class="btn-row" id="actionButtons" style="display: none;">
+                    <button class="btn btn-secondary" id="resetBtn">重新填充</button>
+                    <button class="btn btn-success" id="downloadBtn">下载结果</button>
+                </div>
+
+                <!-- Hint -->
+                <div class="hint-box">
+                    <span class="hint-box-icon">💡</span>
+                    <span>上传Word文件并输入企业信息后，系统将自动识别文档中的空白字段并智能填充，右侧可查看每个步骤的详细处理结果。</span>
+                </div>
+            </div>
+
+            <!-- Right Panel - Progress Steps -->
+            <div class="panel">
+                <div class="panel-title">
+                    <svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                        <polyline points="22 4 12 14.01 9 11.01"/>
+                    </svg>
+                    处理进度与结果
+                </div>
+
+                <div class="steps-container" id="stepsContainer">
+                    <!-- Step 1: Document Parse -->
+                    <div class="step-card" data-step="0">
+                        <div class="step-header" onclick="toggleStepContent(0)">
+                            <div class="step-icon pending" id="icon-0">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                    <polyline points="14 2 14 8 20 8"/>
+                                    <line x1="16" y1="13" x2="8" y2="13"/>
+                                    <line x1="16" y1="17" x2="8" y2="17"/>
+                                    <polyline points="10 9 9 9 8 9"/>
+                                </svg>
+                            </div>
+                            <div class="step-info">
+                                <div class="step-title">文档解析</div>
+                                <div class="step-desc">读取并分析 Word 文档结构</div>
+                            </div>
+                            <div class="step-status">
+                                <span class="step-badge pending" id="badge-0">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="12" cy="12" r="10"/>
+                                        <polyline points="12 6 12 12 16 14"/>
+                                    </svg>
+                                    待开始
+                                </span>
+                                <div class="step-toggle" id="toggle-0">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <polyline points="6 9 12 15 18 9"/>
+                                    </svg>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="step-content" id="content-0">
+                            <div class="step-content-inner">
+                                <div class="content-box placeholder" id="text-0">等待文档解析...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 2: AI Tagging -->
+                    <div class="step-card" data-step="1">
+                        <div class="step-header" onclick="toggleStepContent(1)">
+                            <div class="step-icon pending" id="icon-1">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <circle cx="12" cy="12" r="10"/>
+                                    <line x1="12" y1="16" x2="12" y2="12"/>
+                                    <line x1="12" y1="8" x2="12.01" y2="8"/>
+                                </svg>
+                            </div>
+                            <div class="step-info">
+                                <div class="step-title">AI 智能打标</div>
+                                <div class="step-desc">使用 AI 识别文档中的空白字段</div>
+                            </div>
+                            <div class="step-status">
+                                <span class="step-badge pending" id="badge-1">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="12" cy="12" r="10"/>
+                                        <polyline points="12 6 12 12 16 14"/>
+                                    </svg>
+                                    待开始
+                                </span>
+                                <div class="step-toggle" id="toggle-1">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <polyline points="6 9 12 15 18 9"/>
+                                    </svg>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="step-content" id="content-1">
+                            <div class="step-content-inner">
+                                <div class="content-box placeholder" id="text-1">
+                                    <div style="display: flex; align-items: center; gap: 8px;">
+                                        <div class="spinner spinner-blue"></div>
+                                        <span>AI 正在智能识别文档中的空白字段，请稍候...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 3: Tag Extraction -->
+                    <div class="step-card" data-step="2">
+                        <div class="step-header" onclick="toggleStepContent(2)">
+                            <div class="step-icon pending" id="icon-2">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/>
+                                    <line x1="7" y1="7" x2="7.01" y2="7"/>
+                                </svg>
+                            </div>
+                            <div class="step-info">
+                                <div class="step-title">标签提取</div>
+                                <div class="step-desc">从打标结果中提取所有标签</div>
+                            </div>
+                            <div class="step-status">
+                                <span class="step-badge pending" id="badge-2">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="12" cy="12" r="10"/>
+                                        <polyline points="12 6 12 12 16 14"/>
+                                    </svg>
+                                    待开始
+                                </span>
+                                <div class="step-toggle" id="toggle-2">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <polyline points="6 9 12 15 18 9"/>
+                                    </svg>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="step-content" id="content-2">
+                            <div class="step-content-inner">
+                                <div class="content-box" id="tagsBox">
+                                    <div class="tags-grid" id="tagsGrid">
+                                        <span style="color: #999; font-size: 13px;">等待提取标签...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 4: Info Matching -->
+                    <div class="step-card" data-step="3">
+                        <div class="step-header" onclick="toggleStepContent(3)">
+                            <div class="step-icon pending" id="icon-3">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                                    <circle cx="9" cy="7" r="4"/>
+                                    <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                                    <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                                </svg>
+                            </div>
+                            <div class="step-info">
+                                <div class="step-title">企业信息匹配</div>
+                                <div class="step-desc">将标签与企业信息进行智能匹配</div>
+                            </div>
+                            <div class="step-status">
+                                <span class="step-badge pending" id="badge-3">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="12" cy="12" r="10"/>
+                                        <polyline points="12 6 12 12 16 14"/>
+                                    </svg>
+                                    待开始
+                                </span>
+                                <div class="step-toggle" id="toggle-3">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <polyline points="6 9 12 15 18 9"/>
+                                    </svg>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="step-content" id="content-3">
+                            <div class="step-content-inner">
+                                <div class="content-box" id="matchBox" style="padding: 0; max-height: 280px; overflow-y: auto;">
+                                    <div class="match-list" id="matchList">
+                                        <div style="padding: 20px; text-align: center; color: #999; font-size: 13px;">等待匹配结果...</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 5: Content Fill -->
+                    <div class="step-card" data-step="4">
+                        <div class="step-header" onclick="toggleStepContent(4)">
+                            <div class="step-icon pending" id="icon-4">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                </svg>
+                            </div>
+                            <div class="step-info">
+                                <div class="step-title">内容填充</div>
+                                <div class="step-desc">将匹配结果填充到文档中</div>
+                            </div>
+                            <div class="step-status">
+                                <span class="step-badge pending" id="badge-4">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="12" cy="12" r="10"/>
+                                        <polyline points="12 6 12 12 16 14"/>
+                                    </svg>
+                                    待开始
+                                </span>
+                                <div class="step-toggle" id="toggle-4">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <polyline points="6 9 12 15 18 9"/>
+                                    </svg>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="step-content" id="content-4">
+                            <div class="step-content-inner">
+                                <div class="content-box" id="statsBox">
+                                    <div class="stats-grid" id="statsGrid">
+                                        <div class="stat-item">
+                                            <div class="stat-value" id="statTotal">-</div>
+                                            <div class="stat-label">总标签数</div>
+                                        </div>
+                                        <div class="stat-item">
+                                            <div class="stat-value" id="statFilled">-</div>
+                                            <div class="stat-label">已填充</div>
+                                        </div>
+                                        <div class="stat-item">
+                                            <div class="stat-value" id="statPending">-</div>
+                                            <div class="stat-label">待补全</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global state
+        let uploadedFile = null;
+        let originalFilename = null;
+        let taskId = null;
+        let downloadUrl = null;
+
+        // DOM Elements
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const fileCard = document.getElementById('fileCard');
+        const fileName = document.getElementById('fileName');
+        const fileSize = document.getElementById('fileSize');
+        const removeFile = document.getElementById('removeFile');
+        const companyInfo = document.getElementById('companyInfo');
+        const charCount = document.getElementById('charCount');
+        const fillBtn = document.getElementById('fillBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const actionButtons = document.getElementById('actionButtons');
+        const progressWrapper = document.getElementById('progressWrapper');
+        const progressPercent = document.getElementById('progressPercent');
+        const progressFill = document.getElementById('progressFill');
+        const progressEta = document.getElementById('progressEta');
+        const errorMessage = document.getElementById('errorMessage');
+
+        // API Base URL
+        const API_BASE = '';
+
+        // Character count
+        function updateCharCount() {
+            charCount.textContent = `${companyInfo.value.length} 字符`;
+        }
+        companyInfo.addEventListener('input', updateCharCount);
+        updateCharCount();
+
+        // File Upload Handling
+        uploadArea.addEventListener('click', () => fileInput.click());
+
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const file = e.dataTransfer.files[0];
+            if (file && file.name.endsWith('.docx')) {
+                handleFile(file);
+            } else {
+                showError('请上传 .docx 格式的 Word 文件');
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) handleFile(file);
+        });
+
+        removeFile.addEventListener('click', (e) => {
+            e.stopPropagation();
+            resetFileUpload();
+        });
+
+        function handleFile(file) {
+            uploadedFile = file;
+            originalFilename = file.name;  // 保存原始文件名
+            uploadArea.style.display = 'none';
+            fileCard.style.display = 'flex';
+            fileName.textContent = file.name;
+            fileSize.textContent = formatFileSize(file.size);
+            hideError();
+        }
+
+        function resetFileUpload() {
+            uploadedFile = null;
+            originalFilename = null;
+            taskId = null;
+            fileCard.style.display = 'none';
+            uploadArea.style.display = 'block';
+            fileInput.value = '';
+            resetAllSteps();
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        function showError(msg) {
+            errorMessage.textContent = msg;
+            errorMessage.style.display = 'block';
+        }
+
+        function hideError() {
+            errorMessage.style.display = 'none';
+        }
+
+        // Toggle step content
+        function toggleStepContent(stepIndex) {
+            const content = document.getElementById(`content-${stepIndex}`);
+            const toggle = document.getElementById(`toggle-${stepIndex}`);
+            content.classList.toggle('expanded');
+            toggle.classList.toggle('expanded');
+        }
+
+        // Update step status
+        function updateStepStatus(stepIndex, status, timeStr) {
+            const card = document.querySelector(`[data-step="${stepIndex}"]`);
+            const icon = document.getElementById(`icon-${stepIndex}`);
+            const badge = document.getElementById(`badge-${stepIndex}`);
+
+            card.classList.remove('active', 'completed', 'error');
+            if (status === 'running') card.classList.add('active');
+            if (status === 'completed') card.classList.add('completed');
+            if (status === 'error') card.classList.add('error');
+
+            icon.className = 'step-icon ' + status;
+
+            if (status === 'completed') {
+                icon.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>`;
+                badge.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg> ${timeStr || '已完成'}`;
+                badge.className = 'step-badge completed';
+            } else if (status === 'running') {
+                icon.innerHTML = `<div class="spinner" style="width: 14px; height: 14px; border-width: 2px;"></div>`;
+                badge.innerHTML = `<div class="spinner spinner-blue" style="width: 12px; height: 12px; border-width: 1.5px;"></div> 进行中`;
+                badge.className = 'step-badge running';
+            } else if (status === 'error') {
+                icon.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+                badge.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 出错`;
+                badge.className = 'step-badge error';
+            } else {
+                icon.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`;
+                badge.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> 待开始`;
+                badge.className = 'step-badge pending';
+            }
+        }
+
+        // Update step content
+        function updateStepContent(stepIndex, content) {
+            const text = document.getElementById(`text-${stepIndex}`);
+            if (text) {
+                text.innerHTML = content;
+                text.className = 'content-box';
+            }
+        }
+
+        // Update tags display
+        function updateTagsDisplay(tags) {
+            const tagsGrid = document.getElementById('tagsGrid');
+
+            if (tags && tags.length > 0) {
+                tagsGrid.innerHTML = tags.map(tag =>
+                    `<span class="tag-chip">{{${tag}}}</span>`
+                ).join('');
+            } else {
+                tagsGrid.innerHTML = '<span style="color: #999; font-size: 13px;">未提取到标签</span>';
+            }
+
+            document.getElementById('content-2').classList.add('expanded');
+            document.getElementById('toggle-2').classList.add('expanded');
+        }
+
+        // Update match results display
+        function updateMatchDisplay(matchedData) {
+            const matchList = document.getElementById('matchList');
+
+            if (matchedData && Object.keys(matchedData).length > 0) {
+                const entries = Object.entries(matchedData).slice(0, 30);
+                matchList.innerHTML = entries.map(([tag, value]) => `
+                    <div class="match-item">
+                        <span class="match-tag">{{${tag}}}</span>
+                        <span class="match-arrow">→</span>
+                        <span class="match-value" title="${value}">${value}</span>
+                    </div>
+                `).join('');
+            } else {
+                matchList.innerHTML = '<div style="padding: 20px; text-align: center; color: #999; font-size: 13px;">未匹配到数据</div>';
+            }
+
+            document.getElementById('content-3').classList.add('expanded');
+            document.getElementById('toggle-3').classList.add('expanded');
+        }
+
+        // Update stats display
+        function updateStatsDisplay(stats) {
+            document.getElementById('statTotal').textContent = stats.total;
+            document.getElementById('statFilled').textContent = stats.filled;
+            document.getElementById('statPending').textContent = stats.to_fill;
+
+            document.getElementById('content-4').classList.add('expanded');
+            document.getElementById('toggle-4').classList.add('expanded');
+        }
+
+        // Reset all steps
+        function resetAllSteps() {
+            for (let i = 0; i < 5; i++) {
+                updateStepStatus(i, 'pending');
+                document.getElementById(`content-${i}`).classList.remove('expanded');
+                document.getElementById(`toggle-${i}`).classList.remove('expanded');
+            }
+
+            document.getElementById('text-0').textContent = '等待文档解析...';
+            document.getElementById('text-0').className = 'content-box placeholder';
+            document.getElementById('text-1').innerHTML = `<div style="display: flex; align-items: center; gap: 8px;"><div class="spinner spinner-blue"></div><span>AI 正在智能识别文档中的空白字段，请稍候...</span></div>`;
+            document.getElementById('text-1').className = 'content-box placeholder';
+            document.getElementById('tagsGrid').innerHTML = '<span style="color: #999; font-size: 13px;">等待提取标签...</span>';
+            document.getElementById('matchList').innerHTML = '<div style="padding: 20px; text-align: center; color: #999; font-size: 13px;">等待匹配结果...</div>';
+            document.getElementById('statTotal').textContent = '-';
+            document.getElementById('statFilled').textContent = '-';
+            document.getElementById('statPending').textContent = '-';
+        }
+
+        function formatTime(ms) {
+            if (ms < 1000) return `${ms}ms`;
+            return `${(ms / 1000).toFixed(1)}s`;
+        }
+
+        // Update progress
+        function updateProgress(percent, text, eta) {
+            progressFill.style.width = percent + '%';
+            progressPercent.textContent = Math.round(percent) + '%';
+            if (eta) progressEta.textContent = eta;
+        }
+
+        // Upload file
+        async function uploadFile() {
+            const formData = new FormData();
+            // 使用英文文件名避免编码问题
+            const safeFilename = 'document.docx';
+            const blob = new Blob([await uploadedFile.arrayBuffer()], {type: uploadedFile.type});
+            formData.append('file', blob, safeFilename);
+
+            const response = await fetch(`${API_BASE}/api/upload`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.error || '上传失败');
+            }
+
+            const data = await response.json();
+            return data.task_id;
+        }
+
+        // Process document
+        async function processDocument() {
+            // 使用 JSON 格式发送，避免中文编码问题
+            // 注意：filename 必须与上传时使用的文件名一致
+            const data = {
+                filename: 'document.docx',  // 与上传时的 safeFilename 一致
+                company_info: companyInfo.value
+            };
+
+            // 添加超时控制（5分钟）
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000);
+
+            try {
+                const response = await fetch(`${API_BASE}/api/process/${taskId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data),
+                    signal: controller.signal
+                });
+
+                clearTimeout(timeoutId);
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || '处理失败');
+                }
+
+                return await response.json();
+            } catch (error) {
+                clearTimeout(timeoutId);
+                if (error.name === 'AbortError') {
+                    throw new Error('请求超时，请稍后重试');
+                }
+                throw error;
+            }
+        }
+
+        // Fill Button Handler
+        fillBtn.addEventListener('click', async () => {
+            if (!uploadedFile) {
+                showError('请先上传 Word 文件');
+                return;
+            }
+
+            const companyText = companyInfo.value.trim();
+            if (!companyText) {
+                showError('请输入企业信息');
+                return;
+            }
+
+            fillBtn.disabled = true;
+            fillBtn.innerHTML = '<div class="spinner"></div><span>处理中...</span>';
+            progressWrapper.classList.add('active');
+            actionButtons.style.display = 'none';
+            hideError();
+
+            resetAllSteps();
+
+            try {
+                updateProgress(10, '', '预计剩余时间：约 1 分钟');
+
+                // Step 1: Upload file
+                updateStepStatus(0, 'running');
+                taskId = await uploadFile();
+                updateStepStatus(0, 'completed', formatTime(100));
+                updateStepContent(0, `文档上传成功，任务ID: ${taskId}`);
+                updateProgress(20, '', '预计剩余时间：约 50 秒');
+
+                // Step 2-5: Process document
+                updateStepStatus(1, 'running');
+                updateProgress(35, '', '预计剩余时间：约 40 秒');
+
+                const result = await processDocument();
+
+                if (!result.success) {
+                    throw new Error(result.error || '处理失败');
+                }
+
+                // Update steps from result
+                if (result.steps) {
+                    result.steps.forEach(step => {
+                        const stepIndex = step.step - 1;
+                        if (stepIndex >= 0 && stepIndex < 5) {
+                            updateStepStatus(stepIndex, 'completed', formatTime(step.time_ms));
+                        }
+                    });
+                }
+
+                // Update AI tagging result (step 1 content)
+                if (result.tagged_preview) {
+                    updateStepContent(1, result.tagged_preview.replace(/\n/g, '<br>'));
+                } else {
+                    updateStepContent(1, 'AI打标完成');
+                }
+
+                // Update tags (step 2)
+                if (result.tags) {
+                    updateTagsDisplay(result.tags);
+                    updateStepStatus(2, 'completed', `${result.tags.length}个标签`);
+                }
+
+                // Update match results (step 3)
+                if (result.matched_data) {
+                    updateMatchDisplay(result.matched_data);
+                    const matchCount = Object.keys(result.matched_data).length;
+                    updateStepStatus(3, 'completed', `${matchCount}条匹配`);
+                }
+
+                // Update fill result (step 4)
+                if (result.fill_stats) {
+                    updateStatsDisplay(result.fill_stats);
+                    updateStepStatus(4, 'completed', '已完成');
+                }
+
+                downloadUrl = result.download_url;
+                updateProgress(100, '', '处理完成');
+
+                setTimeout(() => {
+                    fillBtn.style.display = 'none';
+                    fillBtn.disabled = false;
+                    fillBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>开始智能处理</span>`;
+                    progressWrapper.classList.remove('active');
+                    actionButtons.style.display = 'flex';
+                }, 500);
+
+            } catch (error) {
+                console.error(error);
+                showError('处理失败: ' + error.message);
+                fillBtn.disabled = false;
+                fillBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>开始智能处理</span>`;
+                progressWrapper.classList.remove('active');
+
+                for (let i = 0; i < 5; i++) {
+                    const badge = document.getElementById(`badge-${i}`).textContent;
+                    if (badge.includes('进行中')) {
+                        updateStepStatus(i, 'error', '出错');
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Reset button
+        resetBtn.addEventListener('click', () => {
+            fillBtn.style.display = 'block';
+            actionButtons.style.display = 'none';
+            progressWrapper.classList.remove('active');
+            hideError();
+
+            for (let i = 1; i < 5; i++) {
+                updateStepStatus(i, 'pending');
+                document.getElementById(`content-${i}`).classList.remove('expanded');
+                document.getElementById(`toggle-${i}`).classList.remove('expanded');
+            }
+
+            document.getElementById('text-1').innerHTML = `<div style="display: flex; align-items: center; gap: 8px;"><div class="spinner spinner-blue"></div><span>AI 正在智能识别文档中的空白字段，请稍候...</span></div>`;
+            document.getElementById('text-1').className = 'content-box placeholder';
+            document.getElementById('tagsGrid').innerHTML = '<span style="color: #999; font-size: 13px;">等待提取标签...</span>';
+            document.getElementById('matchList').innerHTML = '<div style="padding: 20px; text-align: center; color: #999; font-size: 13px;">等待匹配结果...</div>';
+            document.getElementById('statTotal').textContent = '-';
+            document.getElementById('statFilled').textContent = '-';
+            document.getElementById('statPending').textContent = '-';
+        });
+
+        // Download button
+        downloadBtn.addEventListener('click', () => {
+            if (!downloadUrl) return;
+            window.open(`${API_BASE}${downloadUrl}`, '_blank');
+        });
+    </script>
+</body>
+</html>
