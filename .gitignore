@@ -32,3 +32,8 @@ Thumbs.db
 # 临时文件
 *.tmp
 *.temp
+
+# 不需要的文件
+design-md/
+server.py
+start.sh
