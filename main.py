@@ -36,7 +36,7 @@ load_dotenv()
 # 配置
 KIMI_API_KEY = os.getenv("KIMI_API_KEY", "")
 KIMI_BASE_URL = os.getenv("KIMI_BASE_URL", "https://api.moonshot.cn/v1")
-KIMI_MODEL = os.getenv("KIMI_MODEL", "moonshot-v1-32k")
+KIMI_MODEL = os.getenv("KIMI_MODEL", "moonshot-v1-128k")
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", "10485760"))
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "uploads"))
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "outputs"))
@@ -89,10 +89,44 @@ class ProcessRequest(BaseModel):
 
 # ============== 核心算法：跨Run替换 ==============
 
+def get_paragraph_text_with_underline(para) -> str:
+    """
+    提取段落文本，保留下划线格式
+
+    规则：
+    - 如果下划线文字是纯空白（空格、下划线字符），转换为下划线
+    - 如果下划线文字包含括号提示如（招标人名称），保留原文，让模型理解空白含义
+    - 不影响跨Run替换算法（替换时仍使用 para.text）
+    """
+    from docx.enum.text import WD_UNDERLINE
+
+    result = []
+    for run in para.runs:
+        text = run.text
+        if not text:
+            continue
+
+        # 检查是否有下划线
+        if run.underline and run.underline != WD_UNDERLINE.NONE:
+            # 判断是否为纯空白/下划线字符
+            stripped = text.strip()
+            # 如果是纯空白或纯下划线，转换为下划线
+            if not stripped or stripped == '_' * len(stripped) or re.match(r'^[\s_]+$', stripped):
+                result.append('_' * len(text))
+            else:
+                # 包含实际文字（如括号提示），保留原文
+                result.append(text)
+        else:
+            result.append(text)
+
+    return ''.join(result)
+
+
 def replace_text_in_paragraph(para, old_text: str, new_text) -> bool:
     """
-    跨 Run 替换文本，保留格式
+    跨 Run 替换文本，保留格式（包括下划线）
     核心原则：每次替换前重新读取段落文本，解决索引偏移问题
+    修复：只给新填充的文字添加下划线，不影响其他文字
     """
     if not old_text:
         return False
@@ -127,12 +161,70 @@ def replace_text_in_paragraph(para, old_text: str, new_text) -> bool:
     if not matching_runs:
         return False
 
+    # 检测原位置是否有下划线格式
+    from docx.enum.text import WD_UNDERLINE
+    has_underline = False
+    for run_info in matching_runs:
+        run = run_info['run']
+        if run.underline and run.underline != WD_UNDERLINE.NONE:
+            has_underline = True
+            break
+
     if len(matching_runs) == 1:
         run_info = matching_runs[0]
         run = run_info['run']
         run_local_start = run_info['text_start'] - run_info['run_start']
         run_local_end = run_info['text_end'] - run_info['run_start']
-        run.text = run.text[:run_local_start] + new_text + run.text[run_local_end:]
+
+        # 检查是否需要拆分 Run（替换只发生在部分位置）
+        text_before = run.text[:run_local_start]
+        text_after = run.text[run_local_end:]
+        needs_split = bool(text_before or text_after)
+
+        if needs_split:
+            # 需要拆分：保留前后文字，只给新文字加下划线
+            # 先保存原 Run 的格式信息
+            original_underline = run.underline
+            original_font = run.font
+
+            # 清空原 Run，只保留前面的文字
+            if text_before:
+                run.text = text_before
+                # 前面的文字保持原格式（去掉下划线）
+                run.underline = WD_UNDERLINE.NONE
+            else:
+                run.text = ""
+
+            # 创建新 Run 用于新文字（带下划线）
+            new_run = para.add_run(new_text)
+            if has_underline:
+                new_run.underline = WD_UNDERLINE.SINGLE
+            # 复制其他格式
+            if original_font:
+                try:
+                    new_run.font.name = original_font.name
+                    new_run.font.size = original_font.size
+                    new_run.font.bold = original_font.bold
+                except:
+                    pass
+
+            # 创建新 Run 用于后面的文字（不带下划线）
+            if text_after:
+                after_run = para.add_run(text_after)
+                after_run.underline = WD_UNDERLINE.NONE
+                if original_font:
+                    try:
+                        after_run.font.name = original_font.name
+                        after_run.font.size = original_font.size
+                        after_run.font.bold = original_font.bold
+                    except:
+                        pass
+        else:
+            # 整个 Run 都是被替换的内容，直接替换并保留下划线
+            run.text = new_text
+            if has_underline:
+                run.underline = WD_UNDERLINE.SINGLE
+
         return True
 
     # 跨Run处理：保留首个Run格式
@@ -140,18 +232,39 @@ def replace_text_in_paragraph(para, old_text: str, new_text) -> bool:
     first_run = first_run_info['run']
     first_run_local_start = first_run_info['text_start'] - first_run_info['run_start']
 
-    new_run_text = first_run.text[:first_run_local_start] + new_text
-    first_run.text = new_run_text
+    # 检查首个 Run 是否有前置文字
+    text_before_first = first_run.text[:first_run_local_start]
 
+    if text_before_first:
+        # 有前置文字，需要保留并去掉下划线
+        first_run.text = text_before_first
+        first_run.underline = WD_UNDERLINE.NONE
+
+        # 创建新 Run 用于新文字（带下划线）
+        new_run = para.add_run(new_text)
+        if has_underline:
+            new_run.underline = WD_UNDERLINE.SINGLE
+    else:
+        # 没有前置文字，直接替换
+        first_run.text = new_text
+        if has_underline:
+            first_run.underline = WD_UNDERLINE.SINGLE
+
+    # 处理后续的 Run：删除它们中包含的目标文本部分
     for i, run_info in enumerate(matching_runs):
         if i == 0:
             continue
         run = run_info['run']
+        run_local_start = run_info['text_start'] - run_info['run_start']
         run_local_end = run_info['text_end'] - run_info['run_start']
 
         if run_local_end < len(run.text):
+            # 这个 Run 除了目标文本外还有其他内容，保留后面的内容
             run.text = run.text[run_local_end:]
+            # 后面的内容去掉下划线
+            run.underline = WD_UNDERLINE.NONE
         else:
+            # 整个 Run 都是目标文本的一部分，清空它
             run.text = ""
 
     return True
@@ -251,9 +364,12 @@ def get_tables_with_upper_context(doc: Document, window_size: int = 5) -> List[D
     遍历文档，为每个表格收集上方N段非空上文
     解决表格孤岛问题
     """
+    logger.info(f"[表格上下文增强] 开始处理，窗口大小: {window_size}")
+
     upper_context_window = deque(maxlen=window_size)
     table_context_list = []
 
+    table_count = 0
     for block in iter_block_items(doc):
         if isinstance(block, Paragraph):
             text = block.text.strip()
@@ -261,7 +377,13 @@ def get_tables_with_upper_context(doc: Document, window_size: int = 5) -> List[D
                 upper_context_window.append(text)
 
         elif isinstance(block, Table):
+            table_count += 1
             table_upper_context = "\n".join(upper_context_window)
+
+            logger.info(f"  [表格 {table_count}] 收集上文:")
+            logger.info(f"    上文段落数: {len(upper_context_window)}")
+            logger.info(f"    上文内容: {table_upper_context[:150]}...")
+
             serialized_table, unique_cells_info = serialize_table(block)
 
             table_context_list.append({
@@ -274,10 +396,11 @@ def get_tables_with_upper_context(doc: Document, window_size: int = 5) -> List[D
             # 关键：处理完表格清空窗口，避免污染下一个表格
             upper_context_window.clear()
 
+    logger.info(f"[表格上下文增强] 完成，共处理 {len(table_context_list)} 个表格")
     return table_context_list
 
 
-# ============== 表格序列化（唯一单元格去重 + |分隔符） ==============
+# ============== 表格序列化（合并单元格每行显示内容） ==============
 
 def serialize_table(table) -> Tuple[str, List[Dict]]:
     """
@@ -285,13 +408,25 @@ def serialize_table(table) -> Tuple[str, List[Dict]]:
     返回：(序列化文本, 唯一单元格信息列表)
 
     核心功能：
-    1. 唯一单元格去重提取（解决合并单元格重复问题）
-    2. 使用 | 分隔符伪Markdown（不包含分隔行）
-    3. 空单元格统一替换为 [空]
+    1. 使用 | 分隔符伪Markdown（不包含分隔行）
+    2. 空单元格统一替换为 [空]
+    3. 合并单元格在每一行都显示其内容（让模型更好理解表格结构）
+    4. 记录唯一单元格信息，用于后续回写
+
+    序列化规则：
+    - 每行的列数与原始表格一致
+    - 合并单元格的内容在每一行都显示
+    - 这样模型能理解表格的完整结构
     """
+    logger.info(f"    [表格序列化] 开始处理表格: {len(table.rows)}行 x {len(table.columns)}列")
+
     rows_text = []
     unique_cells_info = []  # 存储每个唯一单元格的引用信息
-    seen_cell_ids = set()  # 用于去重
+    seen_cell_ids = set()  # 用于标记已记录的唯一单元格
+
+    empty_cell_count = 0
+    merged_cell_count = 0
+    content_cell_count = 0
 
     for row_idx, row in enumerate(table.rows):
         cells_text = []
@@ -300,46 +435,58 @@ def serialize_table(table) -> Tuple[str, List[Dict]]:
         for cell_idx, cell in enumerate(row.cells):
             # 使用内存地址作为唯一标识
             cell_id = id(cell._tc)
+            text = cell.text.strip()
 
-            if cell_id not in seen_cell_ids:
+            # 判断是否为唯一单元格（第一次遇到）
+            is_unique = cell_id not in seen_cell_ids
+            if is_unique:
                 seen_cell_ids.add(cell_id)
-                text = cell.text.strip()
 
-                # 处理空白单元格
-                if is_blank_cell(text):
-                    cells_text.append('[空]')
-                    row_cells_info.append({
-                        'row_idx': row_idx,
-                        'cell_idx': cell_idx,
-                        'cell': cell,
-                        'original_text': '',
-                        'is_empty': True
-                    })
-                else:
-                    # 转义分隔符
-                    text = text.replace('|', '｜').replace('\n', ' ')
-                    cells_text.append(text)
-                    row_cells_info.append({
-                        'row_idx': row_idx,
-                        'cell_idx': cell_idx,
-                        'cell': cell,
-                        'original_text': text,
-                        'is_empty': False
-                    })
-            else:
-                # 跳过重复单元格，但仍需要占位
-                cells_text.append('[合并]')
+            # 处理空白单元格
+            if is_blank_cell(text):
+                cells_text.append('[空]')
+                empty_cell_count += 1
                 row_cells_info.append({
                     'row_idx': row_idx,
                     'cell_idx': cell_idx,
                     'cell': cell,
-                    'is_merged': True
+                    'original_text': '',
+                    'is_empty': True,
+                    'is_unique': is_unique
+                })
+            else:
+                # 转义分隔符
+                text_escaped = text.replace('|', '｜').replace('\n', ' ')
+                cells_text.append(text_escaped)
+
+                if is_unique:
+                    content_cell_count += 1
+                else:
+                    merged_cell_count += 1
+
+                row_cells_info.append({
+                    'row_idx': row_idx,
+                    'cell_idx': cell_idx,
+                    'cell': cell,
+                    'original_text': text_escaped,
+                    'is_empty': False,
+                    'is_unique': is_unique
                 })
 
         rows_text.append('| ' + ' | '.join(cells_text) + ' |')
         unique_cells_info.append(row_cells_info)
 
-    return '\n'.join(rows_text), unique_cells_info
+    result = '\n'.join(rows_text)
+
+    logger.info(f"    [表格序列化] 完成:")
+    logger.info(f"      - 空单元格: {empty_cell_count}")
+    logger.info(f"      - 唯一内容单元格: {content_cell_count}")
+    logger.info(f"      - 合并单元格(重复显示): {merged_cell_count}")
+    logger.info(f"      - 序列化行数: {len(rows_text)}")
+    logger.info(f"      - 序列化长度: {len(result)} 字符")
+    logger.info(f"      - 序列化预览: {result[:300]}...")
+
+    return result, unique_cells_info
 
 
 def is_blank_cell(text: str) -> bool:
@@ -394,6 +541,10 @@ def detect_dynamic_list(table_context: Dict) -> Tuple[bool, Optional[int]]:
     """
     判断表格是否为动态列表
     返回：(是否动态列表, 数据起始行索引)
+
+    动态列表特征：
+    - 顶部有表头行（非空单元格）
+    - 后续有多行连续空白行（供用户填写数据）
     """
     serialized = table_context['serialized_table']
     rows = parse_serialized_table(serialized)
@@ -408,7 +559,8 @@ def detect_dynamic_list(table_context: Dict) -> Tuple[bool, Optional[int]]:
     data_start_row = -1
 
     for i, row in enumerate(rows):
-        empty_count = sum(1 for cell in row if cell in ['[空]', '[合并]'])
+        # 统计空单元格数量（[空] 表示空白单元格）
+        empty_count = sum(1 for cell in row if cell == '[空]')
         total_cells = len(row)
 
         # 如果一行中超过70%是空白
@@ -471,25 +623,53 @@ class StepLogger:
 
 # ============== Kimi API 调用 ==============
 
-def call_kimi_api(prompt: str, system_prompt: str, max_tokens: int = 2048) -> str:
-    """通用Kimi API调用"""
+def call_kimi_api(prompt: str, system_prompt: str, max_tokens: int = 2048, timeout: int = 120) -> str:
+    """通用Kimi API调用 - 增加超时和详细日志"""
     try:
         start_time = time.time()
-        response = client.chat.completions.create(
+
+        # 记录请求信息
+        logger.info(f"=== API请求开始 ===")
+        logger.info(f"模型: {KIMI_MODEL}")
+        logger.info(f"System Prompt: {system_prompt[:100]}...")
+        logger.info(f"User Prompt长度: {len(prompt)} 字符")
+        logger.info(f"Max Tokens: {max_tokens}, Timeout: {timeout}秒")
+
+        # 使用带超时的客户端
+        from openai import OpenAI
+        timeout_client = OpenAI(
+            api_key=KIMI_API_KEY,
+            base_url=KIMI_BASE_URL,
+            timeout=timeout
+        )
+
+        response = timeout_client.chat.completions.create(
             model=KIMI_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.1,
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
+            temperature=0.1  # moonshot模型支持temperature
         )
+
         elapsed = time.time() - start_time
         result = response.choices[0].message.content.strip()
-        logger.info(f"API调用成功，耗时{elapsed:.2f}秒")
+
+        # 记录响应信息
+        logger.info(f"=== API响应成功 ===")
+        logger.info(f"耗时: {elapsed:.2f}秒")
+        logger.info(f"响应长度: {len(result)} 字符")
+        logger.info(f"响应预览: {result[:200]}...")
+        logger.info(f"使用Tokens: {response.usage.total_tokens if response.usage else 'N/A'}")
+
         return result
     except Exception as e:
-        logger.error(f"API调用失败: {e}")
+        elapsed = time.time() - start_time
+        logger.error(f"=== API调用失败 ===")
+        logger.error(f"耗时: {elapsed:.2f}秒")
+        logger.error(f"错误类型: {type(e).__name__}")
+        logger.error(f"错误详情: {e}")
         raise
 
 
@@ -563,50 +743,57 @@ def fallback_chunk_indices(total_paragraphs: int, chunk_size: int = 20) -> List[
 
 
 def call_kimi_tag_paragraphs(text_block: str) -> str:
-    """调用Kimi API为段落块打标"""
-    prompt = f"""【角色】你是一名专业的投标助理，精通各类投标文件模板的语义理解。
-【任务】识别文本中所有需要投标人填写、补充或提供的空白处。
+    """调用Kimi API为段落块打标 - 严格版"""
+    prompt = f"""【角色】你是投标文件空白处标签生成器。
 
-【空白处类型包括但不限于】:
-1. 下划线:________
-2. 括号提示:(项目名称)、[请填写]、（单位盖章）
-3. 散落空格:  年  月  日
-4. 冒号留白:投标人:
-5. 表格中的空单元格
+【核心任务】
+找出文本中的所有空白处（下划线、空格），用{{{{标签名}}}}替换整个空白区域。
 
-【打标规则】:
-1. 根据上下文语义，为每个空白处生成一个简洁的中文标签
-2. 标签格式统一为 {{{{标签名}}}}
-3. 必须返回原句，只替换空白处为标签，严禁删减或改动原句中的其他任何字符
-4. 绝对禁止生成如 {{{{地址}}}}、{{{{姓名}}}} 这样指代不明的标签！结合整块文档上下文，生成高度具体的标签
-5. 如果空白处原有下划线，请用下划线包裹标签:_{{{{标签}}}}_
-6. 输入文本每一行开头都带有固定段落索引格式 [数字]，你必须完整保留每一行的 [数字] 索引
+【绝对禁止】
+1. 禁止在标签后面保留下划线字符"_"
+2. 禁止在标签后面保留空格
+3. 空白处必须100%被标签替换，不能有任何残留
 
-【示例】
-输入：
-[15] 单位名称：________________
-[16] 单位地址：________________
-[17] 法定代表人：    年  月  日
+【空白处识别】
+- 连续下划线：________（整段都要替换）
+- 连续空格：          （整段都要替换）
+- 括号提示：（项目名称）
 
-输出：
-[15] 单位名称：{{{{投标人单位名称}}}}
-[16] 单位地址：{{{{投标人单位地址}}}}
-[17] 法定代表人：{{{{年}}}}年{{{{月}}}}月{{{{日}}}}日
+【正确示例】
+原文：联系人：____________________________
+正确：联系人：{{{{联系人姓名}}}}
+错误：联系人：{{{{联系人姓名}}}}____________________________
 
-【待打标文本块】
-{text_block}"""
+原文：电话：______________________________
+正确：电话：{{{{联系电话}}}}
+错误：电话：{{{{联系电话}}}}______________________________
 
-    system_prompt = "你是标签生成器，只输出打标后的内容，完整保留所有[数字]索引。"
+原文：招标编号为__________的项目
+正确：招标编号为{{{{招标编号}}}}的项目
+错误：招标编号为{{{{招标编号}}}}__________的项目
+
+【待处理文本】
+{text_block}
+
+【输出要求】
+只输出打标后的文本，保留[数字]索引。空白处必须完全替换，不能有任何下划线或空格残留！"""
+
+    system_prompt = "你是空白处标签生成器。必须完全替换空白处，绝对禁止保留下划线或空格。"
     return call_kimi_api(prompt, system_prompt, max_tokens=4096)
 
 
-def call_kimi_tag_table(serialized_table: str, upper_context: str, is_dynamic: bool) -> str:
-    """调用Kimi API为表格打标"""
-    if is_dynamic:
-        prompt = f"""【角色】标书模板表格智能打标专家
+def call_kimi_tag_table(serialized_table: str, upper_context: str) -> str:
+    """调用Kimi API为表格打标 - 统一版本
 
-【任务】接收按|分隔符序列化的表格文本，这是动态列表表格（业绩清单、人员名录等）。
-参考【表格前文背景】，为表格打标。
+    按照技术文档设计：由模型自行区分静态表单和动态列表，不由后端判断
+    """
+    prompt = f"""【角色】标书模板表格智能打标专家
+
+【任务】接收按|分隔符序列化的表格文本，自主判断表格类型：静态表单 / 动态列表。参考【表格前文背景】，为表格打标，仅处理表格内容。
+
+【判断规则】
+1. 静态表单：人员信息、企业资质、固定填报项，特征为属性名+单一项填空；
+2. 动态列表：业绩清单、人员名录、设备清单，特征为顶部统一表头、下方多行重复空白行。
 
 【输入】
 === 表格前文背景（仅参考，禁止修改、禁止输出） ===
@@ -615,53 +802,35 @@ def call_kimi_tag_table(serialized_table: str, upper_context: str, is_dynamic: b
 {serialized_table}
 
 【打标规则】
-1. 仅保留表头和第一行空白位，删除后续所有重复空行
-2. 在首行添加docxtpl循环语法：{{{{tr for item in 列表名称}}}}
-3. 单元格使用泛型标签：{{{{item.字段名}}}}
-4. 列表名称根据上下文命名（如"项目负责人业绩列表"、"历史业绩列表"等）
-5. 标签名必须高度具体，禁止使用{{{{姓名}}}}、{{{{地址}}}}等泛标签
+1. 静态表单：所有[空]逐一替换为独立业务标签{{{{字段名}}}}，保留所有行列结构；
+2. 动态列表：仅保留表头和第一行空白位，删除后续所有重复空行；
+   在首行添加docxtpl循环语法：{{% tr for item in 列表名称 %}}
+   单元格使用泛型标签：{{{{item.字段名}}}}。
+3. 绝对禁止生成如 {{{{地址}}}}、{{{{姓名}}}} 这样指代不明的标签！你必须结合前文背景（如标题、业务场景），生成高度具体的标签（如 {{{{投标人单位地址}}}}、{{{{项目负责人姓名}}}}）。
 
 【示例】
 输入：
+=== 表格前文背景（仅参考，禁止修改、禁止输出） ===
+历史业绩表格
+=== 待打标表格（|分隔序列化） ===
 | 项目名称 | 建设单位 | 合同金额 |
 | [空] | [空] | [空] |
 | [空] | [空] | [空] |
 
 输出：
 | 项目名称 | 建设单位 | 合同金额 |
-| {{{{tr for item in 历史业绩列表}}}}{{{{item.项目名称}}}} | {{{{item.建设单位}}}} | {{{{item.合同金额}}}} |
+| {{% tr for item in 历史业绩列表 %}}{{{{item.项目名称}}}} | {{{{item.建设单位}}}} | {{{{item.合同金额}}}} |
 
 【输出要求】
-1. 严格保留原有|分隔符，仅替换[空]、增减空行
-2. 只输出打标后的表格文本"""
-    else:
-        prompt = f"""【角色】标书模板表格智能打标专家
+1. 严格保留原有|分隔符，仅替换[空]、增减空行，不改动原有文字和顺序。
+2. 只输出打标后的表格文本，禁止输出前文、解释、代码块！"""
 
-【任务】接收按|分隔符序列化的表格文本，这是静态表单（人员信息、企业资质等）。
-参考【表格前文背景】，为表格打标。
-
-【输入】
-=== 表格前文背景（仅参考，禁止修改、禁止输出） ===
-{upper_context}
-=== 待打标表格（|分隔序列化） ===
-{serialized_table}
-
-【打标规则】
-1. 所有[空]逐一替换为独立业务标签{{{{字段名}}}}
-2. 保留所有行列结构，不删除任何行
-3. 标签名必须高度具体，结合前文背景生成
-4. 禁止使用{{{{姓名}}}}、{{{{地址}}}}等泛标签，应使用{{{{投标人单位名称}}}}、{{{{项目负责人姓名}}}}等
-
-【输出要求】
-1. 严格保留原有|分隔符
-2. 只输出打标后的表格文本"""
-
-    system_prompt = "你是表格打标工具，只输出打标后的表格，不输出任何解释。"
+    system_prompt = "你是表格打标工具，只输出打标后的表格文本。标签必须高度具体，禁止使用泛标签。"
     return call_kimi_api(prompt, system_prompt, max_tokens=4096)
 
 
 def call_kimi_match_info(tags: List[str], company_info: str) -> Dict[str, Any]:
-    """调用Kimi API进行信息匹配（支持列表类型）"""
+    """调用Kimi API进行信息匹配（支持列表类型）- 优化版"""
     if not tags:
         return {}
 
@@ -671,38 +840,52 @@ def call_kimi_match_info(tags: List[str], company_info: str) -> Dict[str, Any]:
     for batch_start in range(0, len(tags), batch_size):
         batch_tags = tags[batch_start:batch_start + batch_size]
 
-        prompt = f"""【角色】你是一名专业的企业信息匹配专家。
+        prompt = f"""【角色】你是一名专业的企业信息匹配专家，精通投标文件信息提取。
 
 【输入】
 1. 标签列表:{json.dumps(batch_tags, ensure_ascii=False, indent=2)}
-2. 企业基础信息文本(长文本)
+2. 企业基础信息文本
 
 【企业信息】：
-{company_info[:4000]}
+{company_info[:5000]}
 
 【任务】请在"企业基础信息文本"中，为"标签列表"里的每一个标签寻找最匹配的具体信息。
+
+【匹配规则 - 必须严格遵守】
+1. 标签名称包含完整语义，需要精确匹配：
+   - "投标人单位名称" → 找"企业名称"对应的值
+   - "法定代表人姓名" → 找"法定代表人"下的"姓名"值
+   - "项目负责人姓名" → 找"项目负责人"下的"姓名"值
+   - "联系人电话" → 找"授权委托代理人"下的"联系电话"值
+   - "投标日期年/月/日" → 找"投标日期"对应的年/月/日
+
+2. 对于日期类标签，提取对应日期的数字部分：
+   - "投标日期年" → "2026"
+   - "投标日期月" → "05"
+   - "投标日期日" → "09"
+
+3. 对于签字盖章类标签，返回"[需签字]"或"[需盖章]"
+
+4. 如果企业信息中找不到该标签对应的内容，Value 请返回"待补全"
+
+5. 不要编造信息，必须基于提供的企业信息文本
 
 【特殊说明：列表类型】
 当你看到标签包含"列表"、"业绩"、"人员"等关键字时，说明这是一组列表数据。
 请在企业信息中寻找所有符合条件的项目，提取完整的列表，输出成 JSON 数组形式。
 
-【请严格按照以下 JSON 骨架输出】
+【输出格式】
+直接返回JSON对象，不要输出任何说明或代码块标记：
 {{
-  "企业名称": "XX科技有限公司",
-  "注册资本": "1000万元",
-  "历史业绩列表": [
-    {{"建设单位": "XX", "工程名称": "XX", "建设规模": "XX", "质量": "合格"}},
-    {{"建设单位": "YY", "工程名称": "YY", "建设规模": "YY", "quality": "合格"}}
-  ]
-}}
+  "投标人单位名称": "江苏华宇市政建设集团有限公司",
+  "法定代表人姓名": "陈铭宇",
+  "项目负责人姓名": "周建峰",
+  "投标日期年": "2026",
+  "投标日期月": "05",
+  "投标日期日": "09"
+}}"""
 
-【规则】
-1. 如果企业信息中找不到该标签对应的内容，Value 请返回"待补全"
-2. 不要编造信息，必须基于提供的企业信息文本
-3. 金额、日期等数据保持原文格式
-4. 直接返回JSON对象，不要输出任何说明"""
-
-        system_prompt = "你是数据匹配工具，只输出JSON。"
+        system_prompt = "你是数据匹配工具，只输出JSON，不要输出代码块标记。"
 
         try:
             result = call_kimi_api(prompt, system_prompt, max_tokens=8192)
@@ -788,19 +971,38 @@ def process_document(
     step_logger: StepLogger,
     progress_callback=None
 ) -> tuple:
-    """处理文档的主流程"""
+    """处理文档的主流程 - 增强日志版"""
 
     # Step 1: 合并碎片化 Run
+    logger.info("=" * 60)
+    logger.info("【Step 1】文档预处理 - 合并碎片化Run")
+    logger.info("=" * 60)
+
     step_logger.log_step("文档预处理", "running")
     if progress_callback:
         progress_callback(1, "合并文档格式...")
 
     start_time = time.time()
+
+    # 记录处理前的Run数量
+    total_runs_before = sum(len(para.runs) for para in doc.paragraphs)
+    logger.info(f"处理前总Run数: {total_runs_before}")
+
     merged_count = merge_adjacent_runs(doc)
+
+    total_runs_after = sum(len(para.runs) for para in doc.paragraphs)
+    logger.info(f"处理后总Run数: {total_runs_after}")
+    logger.info(f"合并Run数: {merged_count}")
+
     elapsed = int((time.time() - start_time) * 1000)
     step_logger.log_step("文档预处理", "completed", {"time_ms": elapsed, "merged_runs": merged_count})
 
     # Step 2: AI 辅助打标 - 正文段落（索引式语义分块）
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("【Step 2】AI辅助打标 - 正文段落")
+    logger.info("=" * 60)
+
     step_logger.log_step("AI辅助打标-段落", "running")
     if progress_callback:
         progress_callback(2, "AI正在识别空白处...")
@@ -814,19 +1016,28 @@ def process_document(
         if txt:
             valid_paragraphs.append(para)
 
-    # 2.2 调用AI进行语义分块
-    numbered_lines = [f"[{idx}] {p.text.strip()}" for idx, p in enumerate(valid_paragraphs)]
-    numbered_text = "\n".join(numberd_lines[:100])  # 限制长度
+    logger.info(f"有效段落数: {len(valid_paragraphs)}")
+
+    # 2.2 调用AI进行语义分块（使用带下划线的文本）
+    numbered_lines = [f"[{idx}] {get_paragraph_text_with_underline(p).strip()}" for idx, p in enumerate(valid_paragraphs)]
+    numbered_text = "\n".join(numbered_lines[:100])  # 限制长度
+
+    logger.info(f"语义分块输入文本长度: {len(numbered_text)} 字符")
+    logger.info(f"语义分块输入预览: {numbered_text[:300]}...")
 
     try:
-        block_indices = call_kimi_semantic_chunk(numberd_text, len(valid_paragraphs))
+        block_indices = call_kimi_semantic_chunk(numbered_text, len(valid_paragraphs))
         logger.info(f"语义分块结果: {block_indices}")
+        logger.info(f"分块数量: {len(block_indices) - 1}")
     except Exception as e:
-        logger.warning(f"语义分块失败，使用全文处理: {e}")
-        block_indices = [0, len(valid_paragraphs)]
+        logger.warning(f"语义分块失败，使用兜底方案: {e}")
+        block_indices = fallback_chunk_indices(len(valid_paragraphs))
+        logger.info(f"使用兜底分块: {block_indices}")
 
     # 2.3 按块打标
     paragraph_processed = 0
+    all_tags_from_paragraphs = []
+
     for i in range(len(block_indices) - 1):
         start_idx = block_indices[i]
         end_idx = block_indices[i + 1]
@@ -836,41 +1047,78 @@ def process_document(
         if not block_paras:
             continue
 
-        block_text = "\n".join([f"[{start_idx + j}] {p.text.strip()}" for j, p in enumerate(block_paras)])
+        block_text = "\n".join([f"[{start_idx + j}] {get_paragraph_text_with_underline(p).strip()}" for j, p in enumerate(block_paras)])
+
+        logger.info("")
+        logger.info(f"--- 处理段落块 {i + 1}/{len(block_indices) - 1} ---")
+        logger.info(f"段落范围: [{start_idx}] - [{end_idx - 1}]")
+        logger.info(f"块内段落数: {len(block_paras)}")
+        logger.info(f"块文本长度: {len(block_text)} 字符")
+        logger.info(f"块文本预览: {block_text[:200]}...")
 
         # 调用AI打标
         try:
+            logger.info(f"开始调用AI打标...")
             tagged_text = call_kimi_tag_paragraphs(block_text)
+
+            logger.info(f"AI打标结果长度: {len(tagged_text)} 字符")
+            logger.info(f"AI打标结果预览: {tagged_text[:300]}...")
+
             tagged_map = parse_tagged_paragraphs(tagged_text)
+            logger.info(f"解析出的段落映射数: {len(tagged_map)}")
 
             # 应用打标结果
+            applied_count = 0
             for idx_offset, para in enumerate(block_paras):
                 global_idx = start_idx + idx_offset
                 if global_idx in tagged_map:
                     new_text = tagged_map[global_idx]
                     if "{{" in new_text and new_text != para.text:
+                        old_text = para.text[:50]
                         replace_text_in_paragraph(para, para.text, new_text)
+                        logger.info(f"  段落[{global_idx}] 已打标: '{old_text}...' -> '{new_text[:50]}...'")
                         paragraph_processed += 1
+                        applied_count += 1
 
+                        # 提取标签
+                        tags_in_para = re.findall(r'\{\{([^}]+)\}\}', new_text)
+                        all_tags_from_paragraphs.extend(tags_in_para)
+
+            logger.info(f"块内应用打标数: {applied_count}")
             step_logger.log_api_call(f"paragraph_block_{i}", block_text[:300], tagged_text[:300])
 
         except Exception as e:
             logger.error(f"段落块 {i} 打标失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    logger.info("")
+    logger.info(f"段落打标完成统计:")
+    logger.info(f"  - 处理段落块数: {len(block_indices) - 1}")
+    logger.info(f"  - 成功打标段落数: {paragraph_processed}")
+    logger.info(f"  - 提取标签数: {len(all_tags_from_paragraphs)}")
+    logger.info(f"  - 标签列表: {all_tags_from_paragraphs[:20]}...")
 
     elapsed = int((time.time() - start_time) * 1000)
     step_logger.log_step("AI辅助打标-段落", "completed", {"time_ms": elapsed, "processed": paragraph_processed})
 
     # Step 3: AI 辅助打标 - 表格（上下文增强 + 唯一单元格）
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("【Step 3】AI辅助打标 - 表格")
+    logger.info("=" * 60)
+
     step_logger.log_step("AI辅助打标-表格", "running")
     if progress_callback:
         progress_callback(3, "处理表格...")
 
     start_time = time.time()
     table_processed = 0
+    all_tags_from_tables = []
 
     # 获取带上下文的表格
     tables_with_context = get_tables_with_upper_context(doc)
-    logger.info(f"发现 {len(tables_with_context)} 个表格")
+    logger.info(f"发现表格数: {len(tables_with_context)}")
 
     for table_idx, table_ctx in enumerate(tables_with_context[:10]):
         table = table_ctx['table']
@@ -878,52 +1126,113 @@ def process_document(
         serialized_table = table_ctx['serialized_table']
         unique_cells_info = table_ctx['unique_cells_info']
 
-        # 检测是否为动态列表
-        is_dynamic, data_start_row = detect_dynamic_list(table_ctx)
+        logger.info("")
+        logger.info(f"--- 处理表格 {table_idx + 1}/{len(tables_with_context)} ---")
+        logger.info(f"表格尺寸: {len(table.rows)} 行 x {len(table.columns)} 列")
+        logger.info(f"表格上文: {upper_context[:100]}...")
+        logger.info(f"序列化表格长度: {len(serialized_table)} 字符")
+        logger.info(f"序列化表格预览: {serialized_table[:300]}...")
 
         try:
-            # 调用AI打标
-            tagged_table = call_kimi_tag_table(serialized_table, upper_context, is_dynamic)
+            logger.info(f"开始调用AI表格打标...")
+            tagged_table = call_kimi_tag_table(serialized_table, upper_context)
+
+            logger.info(f"AI表格打标结果长度: {len(tagged_table)} 字符")
+            logger.info(f"AI表格打标结果: {tagged_table[:300]}...")
 
             step_logger.log_api_call(f"table_{table_idx}", serialized_table[:500], tagged_table[:500])
 
             # 解析打标结果
             tagged_rows = parse_serialized_table(tagged_table)
+            logger.info(f"解析出行数: {len(tagged_rows)}")
+
+            # 提取标签
+            for row in tagged_rows:
+                for cell in row:
+                    tags_in_cell = re.findall(r'\{\{([^}]+)\}\}', cell)
+                    all_tags_from_tables.extend(tags_in_cell)
 
             # 应用回表格
-            apply_table_tags(table, tagged_rows, unique_cells_info, is_dynamic)
+            apply_table_tags(table, tagged_rows, unique_cells_info)
 
             table_processed += 1
-            logger.info(f"表格 {table_idx} 处理完成 (动态列表: {is_dynamic})")
+            logger.info(f"表格 {table_idx} 处理完成")
+            logger.info(f"表格标签: {all_tags_from_tables[-10:] if all_tags_from_tables else '无'}")
 
         except Exception as e:
             logger.error(f"处理表格 {table_idx} 失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             step_logger.log_step(f"表格_{table_idx}_错误", "error", {"error": str(e)})
+
+    logger.info("")
+    logger.info(f"表格打标完成统计:")
+    logger.info(f"  - 处理表格数: {table_processed}")
+    logger.info(f"  - 提取标签数: {len(all_tags_from_tables)}")
 
     elapsed = int((time.time() - start_time) * 1000)
     step_logger.log_step("AI辅助打标-表格", "completed", {"time_ms": elapsed, "processed": table_processed})
 
     # Step 4: 标签提取
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("【Step 4】标签提取")
+    logger.info("=" * 60)
+
     step_logger.log_step("标签提取", "running")
     if progress_callback:
         progress_callback(4, "提取标签...")
 
     start_time = time.time()
     tags = extract_tags_from_doc(doc)
+
+    logger.info(f"提取标签总数: {len(tags)}")
+    logger.info(f"标签列表: {tags[:30]}...")
+
     elapsed = int((time.time() - start_time) * 1000)
     step_logger.log_step("标签提取", "completed", {"time_ms": elapsed, "count": len(tags), "tags": tags})
 
     # Step 5: 企业信息匹配
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("【Step 5】企业信息匹配")
+    logger.info("=" * 60)
+
     step_logger.log_step("企业信息匹配", "running")
     if progress_callback:
         progress_callback(5, "匹配企业信息...")
 
     start_time = time.time()
+
+    logger.info(f"待匹配标签数: {len(tags)}")
+    logger.info(f"企业信息长度: {len(company_info)} 字符")
+    logger.info(f"企业信息预览: {company_info[:300]}...")
+
     matched_data = call_kimi_match_info(tags, company_info)
+
+    # 统计匹配结果
+    matched_count = sum(1 for v in matched_data.values() if v and v != "待补全")
+    unmatched_count = len(matched_data) - matched_count
+
+    logger.info(f"匹配完成统计:")
+    logger.info(f"  - 成功匹配: {matched_count}")
+    logger.info(f"  - 待补全: {unmatched_count}")
+    logger.info(f"  - 匹配率: {matched_count * 100 // len(matched_data) if matched_data else 0}%")
+
+    # 显示匹配结果详情
+    logger.info("匹配结果详情:")
+    for tag, value in list(matched_data.items())[:20]:
+        logger.info(f"  {tag}: {value}")
+
     elapsed = int((time.time() - start_time) * 1000)
     step_logger.log_step("企业信息匹配", "completed", {"time_ms": elapsed, "matched_count": len(matched_data)})
 
     # Step 6: 内容填充
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("【Step 6】内容填充")
+    logger.info("=" * 60)
+
     step_logger.log_step("内容填充", "running")
     if progress_callback:
         progress_callback(6, "填充内容...")
@@ -932,15 +1241,26 @@ def process_document(
     replacement_count = 0
 
     # 处理正文
+    logger.info("填充正文段落...")
+    para_replacement_count = 0
     for para in doc.paragraphs:
         for tag, value in matched_data.items():
             placeholder = f"{{{{{tag}}}}}"
             if placeholder in para.text:
+                old_text = para.text[:50]
                 if replace_text_in_paragraph(para, placeholder, value):
+                    new_text = para.text[:50]
+                    logger.info(f"  替换: '{old_text}...' -> '{new_text}...'")
                     replacement_count += 1
+                    para_replacement_count += 1
+
+    logger.info(f"正文填充数: {para_replacement_count}")
 
     # 处理表格
-    for table in doc.tables:
+    logger.info("填充表格...")
+    table_replacement_count = 0
+    for table_idx, table in enumerate(doc.tables):
+        table_count = 0
         for row in table.rows:
             for cell in row.cells:
                 for para in cell.paragraphs:
@@ -949,9 +1269,27 @@ def process_document(
                         if placeholder in para.text:
                             if replace_text_in_paragraph(para, placeholder, value):
                                 replacement_count += 1
+                                table_replacement_count += 1
+                                table_count += 1
+        if table_count > 0:
+            logger.info(f"  表格 {table_idx} 填充数: {table_count}")
+
+    logger.info(f"表格填充数: {table_replacement_count}")
+    logger.info(f"总填充数: {replacement_count}")
 
     elapsed = int((time.time() - start_time) * 1000)
     step_logger.log_step("内容填充", "completed", {"time_ms": elapsed, "count": replacement_count})
+
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("【处理完成】最终统计")
+    logger.info("=" * 60)
+    logger.info(f"合并Run数: {merged_count}")
+    logger.info(f"段落打标数: {paragraph_processed}")
+    logger.info(f"表格打标数: {table_processed}")
+    logger.info(f"标签总数: {len(tags)}")
+    logger.info(f"匹配成功数: {matched_count}")
+    logger.info(f"填充总数: {replacement_count}")
 
     details = {
         "steps": [
@@ -970,22 +1308,15 @@ def process_document(
     return doc, details
 
 
-def apply_table_tags(table: Table, tagged_rows: List[List[str]], unique_cells_info: List, is_dynamic: bool):
-    """将打标结果应用回Word表格"""
+def apply_table_tags(table: Table, tagged_rows: List[List[str]], unique_cells_info: List):
+    """将打标结果应用回Word表格
 
-    # 处理动态列表：删除多余空行
-    if is_dynamic and len(tagged_rows) < len(table.rows):
-        # 保留表头和第一数据行，删除其余空行
-        rows_to_keep = len(tagged_rows)
-        rows_to_delete = len(table.rows) - rows_to_keep
+    说明：
+    - 模型自行判断表格类型并输出打标结果
+    - 序列化时合并单元格在每行都显示内容，所以列数一致
+    - 只更新唯一单元格（is_unique=True），合并单元格不重复更新
+    """
 
-        for _ in range(rows_to_delete):
-            if len(table.rows) > rows_to_keep:
-                # 删除最后一行
-                tr = table.rows[-1]._tr
-                tr.getparent().remove(tr)
-
-    # 应用标签
     for row_idx, row in enumerate(table.rows):
         if row_idx >= len(tagged_rows):
             break
@@ -999,8 +1330,8 @@ def apply_table_tags(table: Table, tagged_rows: List[List[str]], unique_cells_in
 
             cell_info = cells_info[cell_idx] if cell_idx < len(cells_info) else {}
 
-            # 跳过合并单元格
-            if cell_info.get('is_merged'):
+            # 只更新唯一单元格，合并单元格不重复更新
+            if not cell_info.get('is_unique', True):
                 continue
 
             tagged_text = tagged_cells[cell_idx]
