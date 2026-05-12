@@ -27,6 +27,8 @@ from docx.oxml.text.paragraph import CT_P
 from docx.oxml.table import CT_Tbl
 from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
+from docxtpl import DocxTemplate
+import io
 from openai import OpenAI
 import aiofiles
 
@@ -707,8 +709,8 @@ class StepLogger:
         api_log = {
             "timestamp": datetime.now().isoformat(),
             "step": step,
-            "prompt_preview": prompt[:500] + "..." if len(prompt) > 500 else prompt,
-            "response_preview": response[:500] + "..." if response and len(response) > 500 else response,
+            "prompt_preview": prompt[:2000] + "..." if len(prompt) > 2000 else prompt,
+            "response_preview": response[:2000] + "..." if response and len(response) > 2000 else response,
             "error": error
         }
         api_log_file = LOG_DIR / f"{self.task_id}_api_calls.jsonl"
@@ -759,7 +761,7 @@ def call_kimi_api(prompt: str, system_prompt: str, max_tokens: int = 2048, timeo
         logger.info(f"=== API响应成功 ===")
         logger.info(f"耗时: {elapsed:.2f}秒")
         logger.info(f"响应长度: {len(result)} 字符")
-        logger.info(f"响应预览: {result[:200]}...")
+        logger.info(f"响应预览: {result[:1000]}...")
         logger.info(f"使用Tokens: {response.usage.total_tokens if response.usage else 'N/A'}")
 
         return result
@@ -928,22 +930,33 @@ def parse_tagged_paragraphs(text: str) -> Dict[int, str]:
 # ============== 提取标签 ==============
 
 def extract_tags_from_doc(doc: Document) -> List[str]:
-    """从文档中提取所有 {{标签}}"""
+    """
+    从文档中提取所有普通标签和列表标签
+
+    返回：标签列表（包含普通标签和列表名称）
+    """
     tags = set()
-    pattern = r'\{\{(.*?)\}\}'
+    # 匹配 {{普通标签}}
+    normal_pattern = r'\{\{(.*?)\}\}'
+    # 匹配 {% tr for item in 列表名 %}
+    list_pattern = r'\{%\s*tr\s*for\s*item\s*in\s*(.*?)\s*%\}'
+
+    def find_tags(text):
+        tags.update(re.findall(normal_pattern, text))
+        tags.update(re.findall(list_pattern, text))
 
     for para in doc.paragraphs:
-        matches = re.findall(pattern, para.text)
-        tags.update(matches)
+        find_tags(para.text)
 
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for para in cell.paragraphs:
-                    matches = re.findall(pattern, para.text)
-                    tags.update(matches)
+                    find_tags(para.text)
 
-    return sorted(list(tags))
+    # 过滤掉带有 'item.' 前缀的子标签，因为它们从属于列表
+    filtered_tags = [t for t in tags if not t.startswith('item.')]
+    return sorted(list(filtered_tags))
 
 
 # ============== 文档处理主流程 ==============
@@ -1045,7 +1058,7 @@ def process_document(
             tagged_text = call_kimi_tag_paragraphs(block_text)
 
             logger.info(f"AI打标结果长度: {len(tagged_text)} 字符")
-            logger.info(f"AI打标结果预览: {tagged_text[:300]}...")
+            logger.info(f"AI打标结果预览: {tagged_text[:2000]}...")
 
             tagged_map = parse_tagged_paragraphs(tagged_text)
             logger.info(f"解析出的段落映射数: {len(tagged_map)}")
@@ -1114,7 +1127,7 @@ def process_document(
         logger.info(f"表格尺寸: {len(table.rows)} 行 x {len(table.columns)} 列")
         logger.info(f"表格上文: {upper_context[:100]}...")
         logger.info(f"序列化表格长度: {len(serialized_table)} 字符")
-        logger.info(f"序列化表格预览: {serialized_table[:300]}...")
+        logger.info(f"序列化表格预览: {serialized_table[:1000]}...")
 
         try:
             logger.info(f"开始调用AI表格打标...")
@@ -1128,6 +1141,12 @@ def process_document(
             # 解析打标结果
             tagged_rows = parse_serialized_table(tagged_table)
             logger.info(f"解析出行数: {len(tagged_rows)}")
+
+            # 诊断：检测动态列表行，完整记录
+            for ri, row_data in enumerate(tagged_rows):
+                row_text = ' | '.join(row_data)
+                if '{%tr' in row_text:
+                    logger.info(f"  [诊断] 动态列表行 ri={ri}: {row_text}")
 
             # 提取标签
             for row in tagged_rows:
@@ -1210,58 +1229,124 @@ def process_document(
     elapsed = int((time.time() - start_time) * 1000)
     step_logger.log_step("企业信息匹配", "completed", {"time_ms": elapsed, "matched_count": len(matched_data)})
 
-    # Step 6: 内容填充
+    # Step 6: 内容填充与动态渲染
     logger.info("")
     logger.info("=" * 60)
-    logger.info("【Step 6】内容填充")
+    logger.info("【Step 6】内容填充与动态渲染")
     logger.info("=" * 60)
 
-    step_logger.log_step("内容填充", "running")
+    step_logger.log_step("内容填充与动态渲染", "running")
     if progress_callback:
         progress_callback(6, "填充内容...")
 
     start_time = time.time()
     replacement_count = 0
 
-    # 处理正文
-    logger.info("填充正文段落...")
-    para_replacement_count = 0
-    for para in doc.paragraphs:
-        for tag, value in matched_data.items():
-            placeholder = f"{{{{{tag}}}}}"
-            if placeholder in para.text:
-                old_text = para.text[:50]
-                if replace_text_in_paragraph(para, placeholder, value):
-                    new_text = para.text[:50]
-                    logger.info(f"  替换: '{old_text}...' -> '{new_text}...'")
-                    replacement_count += 1
-                    para_replacement_count += 1
+    # === 阶段1：使用 docxtpl 进行动态表格渲染 ===
+    # 先将当前文档保存到内存，供 docxtpl 加载
+    logger.info("阶段1: docxtpl 动态渲染...")
+    doc_io = io.BytesIO()
+    doc.save(doc_io)
+    doc_io.seek(0)
 
-    logger.info(f"正文填充数: {para_replacement_count}")
+    # === 诊断日志：扫描文档中所有 {%tr 标签 ===
+    logger.info("=== [诊断] 渲染前文档中所有 {%tr 标签扫描 ===")
+    tr_tag_found = False
+    for t_idx, table in enumerate(doc.tables):
+        for r_idx, row in enumerate(table.rows):
+            row_text = ' | '.join(cell.text for cell in row.cells)
+            if '{%tr' in row_text:
+                tr_tag_found = True
+                logger.info(f"  [诊断] table={t_idx} row={r_idx}: {row_text}")
+    if not tr_tag_found:
+        logger.info("  [诊断] 未发现任何 {%tr 标签（这可能是问题！）")
+    logger.info("=== [诊断] 扫描结束 ===")
 
-    # 处理表格
-    logger.info("填充表格...")
-    table_replacement_count = 0
-    for table_idx, table in enumerate(doc.tables):
-        table_count = 0
+    try:
+        tpl = DocxTemplate(doc_io)
+
+        # 构造 docxtpl 上下文
+        # matched_data 中可能包含列表类型数据（如 "项目管理班子配备情况列表": [{...}, {...}]）
+        context = matched_data
+
+        logger.info(f"docxtpl 上下文标签数: {len(context)}")
+        # 记录列表类型数据
+        list_tags = [k for k, v in context.items() if isinstance(v, list)]
+        if list_tags:
+            logger.info(f"检测到列表类型标签: {list_tags}")
+            for tag in list_tags:
+                logger.info(f"  {tag}: {len(context[tag])} 条记录")
+
+        # 执行渲染
+        tpl.render(context)
+        final_doc = tpl.get_docx()
+
+        logger.info("docxtpl 渲染成功")
+
+        # 统计 docxtpl 替换数量
+        docxtpl_replacement_count = len([v for v in matched_data.values() if v and v != "待补全"])
+        replacement_count += docxtpl_replacement_count
+
+        # 诊断：在渲染成功后也记录最终文档中的 tr 标签（确认都已处理）
+        tr_rows_in_final = []
+        for t_idx, table in enumerate(final_doc.tables):
+            for r_idx, row in enumerate(table.rows):
+                row_text = ' | '.join(cell.text for cell in row.cells)
+                if '{%tr' in row_text:
+                    tr_rows_in_final.append(f"table={t_idx} row={r_idx}: {row_text}")
+        if tr_rows_in_final:
+            logger.info(f"[诊断] 渲染后仍残留 tr 的行数: {len(tr_rows_in_final)}")
+            for line in tr_rows_in_final[:5]:
+                logger.info(f"  [诊断残留] {line}")
+
+    except Exception as e:
+        logger.error(f"docxtpl 渲染失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        logger.warning("回退到纯 python-docx 替换模式")
+        final_doc = doc
+
+    # === 阶段2：补充处理 docxtpl 未处理的静态标签 ===
+    # 对于 docxtpl 渲染后的文档，检查是否还有未替换的标签
+    logger.info("阶段2: 检查未处理的静态标签...")
+
+    # 收集剩余未替换的标签
+    remaining_tags = []
+    for para in final_doc.paragraphs:
+        remaining_tags.extend(re.findall(r'\{\{([^}]+)\}\}', para.text))
+    for table in final_doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for para in cell.paragraphs:
-                    for tag, value in matched_data.items():
-                        placeholder = f"{{{{{tag}}}}}"
-                        if placeholder in para.text:
-                            if replace_text_in_paragraph(para, placeholder, value):
-                                replacement_count += 1
-                                table_replacement_count += 1
-                                table_count += 1
-        if table_count > 0:
-            logger.info(f"  表格 {table_idx} 填充数: {table_count}")
+                    remaining_tags.extend(re.findall(r'\{\{([^}]+)\}\}', para.text))
 
-    logger.info(f"表格填充数: {table_replacement_count}")
+    if remaining_tags:
+        logger.info(f"发现 {len(remaining_tags)} 个未处理的标签")
+        # 使用跨 Run 替换处理剩余标签
+        for tag in set(remaining_tags):
+            if tag in matched_data:
+                value = matched_data[tag]
+                placeholder = f"{{{{{tag}}}}}"
+                # 处理正文
+                for para in final_doc.paragraphs:
+                    if placeholder in para.text:
+                        if replace_text_in_paragraph(para, placeholder, value):
+                            replacement_count += 1
+                # 处理表格
+                for table in final_doc.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            for para in cell.paragraphs:
+                                if placeholder in para.text:
+                                    if replace_text_in_paragraph(para, placeholder, value):
+                                        replacement_count += 1
+    else:
+        logger.info("所有标签已处理完成")
+
     logger.info(f"总填充数: {replacement_count}")
 
     elapsed = int((time.time() - start_time) * 1000)
-    step_logger.log_step("内容填充", "completed", {"time_ms": elapsed, "count": replacement_count})
+    step_logger.log_step("内容填充与动态渲染", "completed", {"time_ms": elapsed, "count": replacement_count})
 
     logger.info("")
     logger.info("=" * 60)
@@ -1281,14 +1366,14 @@ def process_document(
             {"step": 3, "name": "AI辅助打标-表格", "time_ms": 0, "processed": table_processed},
             {"step": 4, "name": "标签提取", "time_ms": 0, "count": len(tags)},
             {"step": 5, "name": "企业信息匹配", "time_ms": 0},
-            {"step": 6, "name": "内容填充", "time_ms": 0, "count": replacement_count}
+            {"step": 6, "name": "内容填充与动态渲染", "time_ms": 0, "count": replacement_count}
         ],
         "tags": tags,
         "matched_data": matched_data,
         "replacements": replacement_count
     }
 
-    return doc, details
+    return final_doc, details
 
 
 def apply_table_tags(table: Table, tagged_rows: List[List[str]], unique_cells_info: List):
