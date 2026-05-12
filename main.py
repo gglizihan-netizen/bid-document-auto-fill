@@ -187,7 +187,7 @@ def replace_text_in_paragraph(para, old_text: str, new_text) -> bool:
     """
     跨 Run 替换文本，保留格式（包括下划线）
     核心原则：每次替换前重新读取段落文本，解决索引偏移问题
-    修复：只给新填充的文字添加下划线，不影响其他文字
+    修复：在XML层面插入Run，保持原位置，避免顺序错乱
     """
     if not old_text:
         return False
@@ -243,24 +243,31 @@ def replace_text_in_paragraph(para, old_text: str, new_text) -> bool:
         needs_split = bool(text_before or text_after)
 
         if needs_split:
-            # 需要拆分：保留前后文字，只给新文字加下划线
-            # 先保存原 Run 的格式信息
+            # 需要拆分：在XML层面插入Run，保持原位置
             original_underline = run.underline
             original_font = run.font
 
-            # 清空原 Run，只保留前面的文字
+            # 获取原Run在XML中的位置
+            run_element = run._element
+            parent = run_element.getparent()
+            run_index = list(parent).index(run_element)
+
+            # 清空原Run
+            run.text = ""
+
+            # 创建新Run的XML元素并插入到正确位置
+            from docx.oxml import OxmlElement
+
+            # 1. 如果有前面文字，保留在原Run中
             if text_before:
                 run.text = text_before
-                # 前面的文字保持原格式（去掉下划线）
                 run.underline = WD_UNDERLINE.NONE
-            else:
-                run.text = ""
+                run_index += 1  # 下一个插入位置后移
 
-            # 创建新 Run 用于新文字（带下划线）
+            # 2. 创建新Run放新文字，插入到原Run后面
             new_run = para.add_run(new_text)
             if has_underline:
                 new_run.underline = WD_UNDERLINE.SINGLE
-            # 复制其他格式
             if original_font:
                 try:
                     new_run.font.name = original_font.name
@@ -268,8 +275,13 @@ def replace_text_in_paragraph(para, old_text: str, new_text) -> bool:
                     new_run.font.bold = original_font.bold
                 except:
                     pass
+            # 将新Run移动到正确位置
+            new_run_element = new_run._element
+            parent.remove(new_run_element)
+            parent.insert(run_index, new_run_element)
+            run_index += 1
 
-            # 创建新 Run 用于后面的文字（不带下划线）
+            # 3. 如果有后面文字，创建新Run插入
             if text_after:
                 after_run = para.add_run(text_after)
                 after_run.underline = WD_UNDERLINE.NONE
@@ -280,15 +292,18 @@ def replace_text_in_paragraph(para, old_text: str, new_text) -> bool:
                         after_run.font.bold = original_font.bold
                     except:
                         pass
+                after_run_element = after_run._element
+                parent.remove(after_run_element)
+                parent.insert(run_index, after_run_element)
         else:
-            # 整个 Run 都是被替换的内容，直接替换并保留下划线
+            # 整个 Run 都是被替换的内容，直接替换
             run.text = new_text
             if has_underline:
                 run.underline = WD_UNDERLINE.SINGLE
 
         return True
 
-    # 跨Run处理：保留首个Run格式
+    # 跨Run处理：保留首个Run格式，在XML层面插入
     first_run_info = matching_runs[0]
     first_run = first_run_info['run']
     first_run_local_start = first_run_info['text_start'] - first_run_info['run_start']
@@ -296,22 +311,40 @@ def replace_text_in_paragraph(para, old_text: str, new_text) -> bool:
     # 检查首个 Run 是否有前置文字
     text_before_first = first_run.text[:first_run_local_start]
 
+    # 获取首个Run在XML中的位置
+    run_element = first_run._element
+    parent = run_element.getparent()
+    run_index = list(parent).index(run_element)
+
+    # 获取格式信息
+    original_underline = first_run.underline
+    original_font = first_run.font
+
+    # 处理第一个Run
     if text_before_first:
-        # 有前置文字，需要保留并去掉下划线
         first_run.text = text_before_first
         first_run.underline = WD_UNDERLINE.NONE
-
-        # 创建新 Run 用于新文字（带下划线）
-        new_run = para.add_run(new_text)
-        if has_underline:
-            new_run.underline = WD_UNDERLINE.SINGLE
+        run_index += 1
     else:
-        # 没有前置文字，直接替换
-        first_run.text = new_text
-        if has_underline:
-            first_run.underline = WD_UNDERLINE.SINGLE
+        first_run.text = ""
 
-    # 处理后续的 Run：删除它们中包含的目标文本部分
+    # 创建新Run放新文字，插入到正确位置
+    new_run = para.add_run(new_text)
+    if has_underline:
+        new_run.underline = WD_UNDERLINE.SINGLE
+    if original_font:
+        try:
+            new_run.font.name = original_font.name
+            new_run.font.size = original_font.size
+            new_run.font.bold = original_font.bold
+        except:
+            pass
+    new_run_element = new_run._element
+    parent.remove(new_run_element)
+    parent.insert(run_index, new_run_element)
+    run_index += 1
+
+    # 处理后续的 Run：清空它们中的目标文本部分
     for i, run_info in enumerate(matching_runs):
         if i == 0:
             continue
@@ -320,12 +353,9 @@ def replace_text_in_paragraph(para, old_text: str, new_text) -> bool:
         run_local_end = run_info['text_end'] - run_info['run_start']
 
         if run_local_end < len(run.text):
-            # 这个 Run 除了目标文本外还有其他内容，保留后面的内容
             run.text = run.text[run_local_end:]
-            # 后面的内容去掉下划线
             run.underline = WD_UNDERLINE.NONE
         else:
-            # 整个 Run 都是目标文本的一部分，清空它
             run.text = ""
 
     return True
@@ -461,7 +491,7 @@ def get_tables_with_upper_context(doc: Document, window_size: int = 5) -> List[D
     return table_context_list
 
 
-# ============== 表格序列化（合并单元格每行显示内容） ==============
+# ============== 表格序列化（合并单元格同一行只显示一次） ==============
 
 def serialize_table(table) -> Tuple[str, List[Dict]]:
     """
@@ -471,37 +501,51 @@ def serialize_table(table) -> Tuple[str, List[Dict]]:
     核心功能：
     1. 使用 | 分隔符伪Markdown（不包含分隔行）
     2. 空单元格统一替换为 [空]
-    3. 合并单元格在每一行都显示其内容（让模型更好理解表格结构）
-    4. 记录唯一单元格信息，用于后续回写
+    3. 同一行内合并的单元格（跨列）只显示一次，避免重复 [空] 误导模型
+    4. 不同行合并的单元格（跨行）保持每行显示，让模型理解表格结构
+    5. 记录单元格信息，用于后续回写
 
     序列化规则：
-    - 每行的列数与原始表格一致
-    - 合并单元格的内容在每一行都显示
-    - 这样模型能理解表格的完整结构
+    - 同一行内：相同 cell_id 只序列化一次
+    - 不同行间：每行独立处理，跨行合并的单元格在各行都会显示
     """
     logger.info(f"    [表格序列化] 开始处理表格: {len(table.rows)}行 x {len(table.columns)}列")
 
     rows_text = []
-    unique_cells_info = []  # 存储每个唯一单元格的引用信息
-    seen_cell_ids = set()  # 用于标记已记录的唯一单元格
+    unique_cells_info = []  # 存储每个序列化列对应的单元格信息（与序列化列数一致）
 
     empty_cell_count = 0
-    merged_cell_count = 0
     content_cell_count = 0
+    merged_same_row_count = 0  # 同一行内合并去重的数量
+    merged_cross_row_count = 0  # 跨行合并重复显示的数量
+
+    # 全局已记录的唯一单元格ID（用于判断跨行合并）
+    global_seen_cell_ids = set()
 
     for row_idx, row in enumerate(table.rows):
         cells_text = []
         row_cells_info = []
 
+        # 本行内已处理的单元格ID（用于同一行内合并去重）
+        row_seen_cell_ids = set()
+
         for cell_idx, cell in enumerate(row.cells):
-            # 使用内存地址作为唯一标识
             cell_id = id(cell._tc)
             text = cell.text.strip()
 
-            # 判断是否为唯一单元格（第一次遇到）
-            is_unique = cell_id not in seen_cell_ids
-            if is_unique:
-                seen_cell_ids.add(cell_id)
+            # 同一行内合并单元格去重：如果这个 cell_id 在本行已经出现过，跳过
+            if cell_id in row_seen_cell_ids:
+                merged_same_row_count += 1
+                continue
+
+            row_seen_cell_ids.add(cell_id)
+
+            # 判断是否为全局唯一单元格（用于跨行合并的统计）
+            is_globally_unique = cell_id not in global_seen_cell_ids
+            if is_globally_unique:
+                global_seen_cell_ids.add(cell_id)
+            else:
+                merged_cross_row_count += 1
 
             # 处理空白单元格
             if is_blank_cell(text):
@@ -509,29 +553,22 @@ def serialize_table(table) -> Tuple[str, List[Dict]]:
                 empty_cell_count += 1
                 row_cells_info.append({
                     'row_idx': row_idx,
-                    'cell_idx': cell_idx,
                     'cell': cell,
                     'original_text': '',
                     'is_empty': True,
-                    'is_unique': is_unique
+                    'is_globally_unique': is_globally_unique
                 })
             else:
                 # 转义分隔符
                 text_escaped = text.replace('|', '｜').replace('\n', ' ')
                 cells_text.append(text_escaped)
-
-                if is_unique:
-                    content_cell_count += 1
-                else:
-                    merged_cell_count += 1
-
+                content_cell_count += 1
                 row_cells_info.append({
                     'row_idx': row_idx,
-                    'cell_idx': cell_idx,
                     'cell': cell,
                     'original_text': text_escaped,
                     'is_empty': False,
-                    'is_unique': is_unique
+                    'is_globally_unique': is_globally_unique
                 })
 
         rows_text.append('| ' + ' | '.join(cells_text) + ' |')
@@ -541,8 +578,9 @@ def serialize_table(table) -> Tuple[str, List[Dict]]:
 
     logger.info(f"    [表格序列化] 完成:")
     logger.info(f"      - 空单元格: {empty_cell_count}")
-    logger.info(f"      - 唯一内容单元格: {content_cell_count}")
-    logger.info(f"      - 合并单元格(重复显示): {merged_cell_count}")
+    logger.info(f"      - 内容单元格: {content_cell_count}")
+    logger.info(f"      - 同一行合并去重: {merged_same_row_count}")
+    logger.info(f"      - 跨行合并重复显示: {merged_cross_row_count}")
     logger.info(f"      - 序列化行数: {len(rows_text)}")
     logger.info(f"      - 序列化长度: {len(result)} 字符")
     logger.info(f"      - 序列化预览: {result[:300]}...")
@@ -1258,8 +1296,8 @@ def apply_table_tags(table: Table, tagged_rows: List[List[str]], unique_cells_in
 
     说明：
     - 模型自行判断表格类型并输出打标结果
-    - 序列化时合并单元格在每行都显示内容，所以列数一致
-    - 只更新唯一单元格（is_unique=True），合并单元格不重复更新
+    - 序列化时同一行内合并单元格已去重，所以 cells_info 与序列化列数一致
+    - 直接遍历 cells_info，用 cell_info['cell'] 写入，无需遍历 row.cells
     """
 
     for row_idx, row in enumerate(table.rows):
@@ -1269,20 +1307,17 @@ def apply_table_tags(table: Table, tagged_rows: List[List[str]], unique_cells_in
         tagged_cells = tagged_rows[row_idx]
         cells_info = unique_cells_info[row_idx] if row_idx < len(unique_cells_info) else []
 
-        for cell_idx, cell in enumerate(row.cells):
-            if cell_idx >= len(tagged_cells):
+        # 直接遍历序列化列（cells_info），而非原始表格列
+        for seq_idx, cell_info in enumerate(cells_info):
+            if seq_idx >= len(tagged_cells):
                 break
 
-            cell_info = cells_info[cell_idx] if cell_idx < len(cells_info) else {}
+            tagged_text = tagged_cells[seq_idx]
+            cell = cell_info['cell']
 
-            # 只更新唯一单元格，合并单元格不重复更新
-            if not cell_info.get('is_unique', True):
-                continue
-
-            tagged_text = tagged_cells[cell_idx]
-
-            # 如果包含标签，更新单元格
-            if '{{' in tagged_text and '}}' in tagged_text:
+            # 只更新原本是空白的单元格（因为只有空白处需要填充）
+            if cell_info.get('is_empty') and '{{' in tagged_text:
+                # 更新单元格内容
                 for para in cell.paragraphs:
                     if para.text.strip():
                         replace_text_in_paragraph(para, para.text, tagged_text)
