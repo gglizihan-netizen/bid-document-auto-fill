@@ -62,6 +62,67 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ============== 提示词管理器 ==============
+
+class PromptManager:
+    """
+    提示词管理器 - 从 Markdown 文件加载提示词
+
+    使用方式：
+        user_prompt, system_prompt = PromptManager.get('semantic_chunk', paragraphs_text='...')
+    """
+
+    PROMPTS_DIR = Path("prompts")
+
+    @classmethod
+    def load(cls, name: str) -> dict:
+        """
+        加载提示词文件，返回 {'system': str, 'user': str}
+
+        Args:
+            name: 提示词文件名（不含 .md 后缀）
+
+        Returns:
+            dict: 包含 system 和 user 两个键的字典
+        """
+        file_path = cls.PROMPTS_DIR / f"{name}.md"
+        if not file_path.exists():
+            raise FileNotFoundError(f"提示词文件不存在: {file_path}")
+
+        content = file_path.read_text(encoding='utf-8')
+
+        # 解析 Markdown 文件，提取 System Prompt 和 User Prompt
+        system_match = re.search(
+            r'##\s*System\s*Prompt\s*\n(.*?)(?=##\s*User\s*Prompt|\Z)',
+            content, re.DOTALL | re.IGNORECASE
+        )
+        user_match = re.search(
+            r'##\s*User\s*Prompt\s*\n(.*?)(?=##|\Z)',
+            content, re.DOTALL | re.IGNORECASE
+        )
+
+        return {
+            'system': system_match.group(1).strip() if system_match else '',
+            'user': user_match.group(1).strip() if user_match else ''
+        }
+
+    @classmethod
+    def get(cls, name: str, **variables) -> Tuple[str, str]:
+        """
+        获取格式化后的提示词
+
+        Args:
+            name: 提示词文件名（不含 .md 后缀）
+            **variables: 用于变量插值的参数
+
+        Returns:
+            tuple: (user_prompt, system_prompt)
+        """
+        data = cls.load(name)
+        user_prompt = data['user'].format(**variables)
+        return user_prompt, data['system']
+
+
 # ============== 数据模型 ==============
 
 class ProcessStep(BaseModel):
@@ -678,27 +739,14 @@ def call_kimi_semantic_chunk(paragraphs_text: str, total_paragraphs: int) -> Lis
     调用Kimi API进行语义分块
     返回语义块起始索引数组
     """
-    prompt = f"""【角色】文档结构分析专家
-【任务】我将提供一份标书文档纯文本，每一行开头有中括号`[数字]`代表段落物理序号。
-请根据语义识别所有全新业务模块、核心章节的**起始段落序号**。
-
-【判断依据】
-1. 标准章节标题：一、xxx、1.1 xxx、第x章等；
-2. 无标准标号但独立成行、开启全新业务主题的段落；
-3. 忽略普通正文换行、无关短句。
-
-【输出要求】
-1. 仅输出语义块起始段落序号，以纯JSON一维数组返回；
-2. 禁止输出解释、多余文字、代码块；
-3. 严格只返回数字数组，示例：[0,15,34]
-
-【文档内容】
-{paragraphs_text[:6000]}"""
-
-    system_prompt = "你是文档结构分析工具，只输出JSON数组。"
+    # 从外部文件加载提示词
+    user_prompt, system_prompt = PromptManager.get(
+        'semantic_chunk',
+        paragraphs_text=paragraphs_text[:6000]
+    )
 
     try:
-        result = call_kimi_api(prompt, system_prompt, max_tokens=1024)
+        result = call_kimi_api(user_prompt, system_prompt, max_tokens=1024)
         return parse_block_indices(result, total_paragraphs)
     except Exception as e:
         logger.warning(f"语义分块失败，使用兜底方案: {e}")
@@ -744,42 +792,12 @@ def fallback_chunk_indices(total_paragraphs: int, chunk_size: int = 20) -> List[
 
 def call_kimi_tag_paragraphs(text_block: str) -> str:
     """调用Kimi API为段落块打标 - 严格版"""
-    prompt = f"""【角色】你是投标文件空白处标签生成器。
-
-【核心任务】
-找出文本中的所有空白处（下划线、空格），用{{{{标签名}}}}替换整个空白区域。
-
-【绝对禁止】
-1. 禁止在标签后面保留下划线字符"_"
-2. 禁止在标签后面保留空格
-3. 空白处必须100%被标签替换，不能有任何残留
-
-【空白处识别】
-- 连续下划线：________（整段都要替换）
-- 连续空格：          （整段都要替换）
-- 括号提示：（项目名称）
-
-【正确示例】
-原文：联系人：____________________________
-正确：联系人：{{{{联系人姓名}}}}
-错误：联系人：{{{{联系人姓名}}}}____________________________
-
-原文：电话：______________________________
-正确：电话：{{{{联系电话}}}}
-错误：电话：{{{{联系电话}}}}______________________________
-
-原文：招标编号为__________的项目
-正确：招标编号为{{{{招标编号}}}}的项目
-错误：招标编号为{{{{招标编号}}}}__________的项目
-
-【待处理文本】
-{text_block}
-
-【输出要求】
-只输出打标后的文本，保留[数字]索引。空白处必须完全替换，不能有任何下划线或空格残留！"""
-
-    system_prompt = "你是空白处标签生成器。必须完全替换空白处，绝对禁止保留下划线或空格。"
-    return call_kimi_api(prompt, system_prompt, max_tokens=4096)
+    # 从外部文件加载提示词
+    user_prompt, system_prompt = PromptManager.get(
+        'tag_paragraphs',
+        text_block=text_block
+    )
+    return call_kimi_api(user_prompt, system_prompt, max_tokens=4096)
 
 
 def call_kimi_tag_table(serialized_table: str, upper_context: str) -> str:
@@ -787,46 +805,13 @@ def call_kimi_tag_table(serialized_table: str, upper_context: str) -> str:
 
     按照技术文档设计：由模型自行区分静态表单和动态列表，不由后端判断
     """
-    prompt = f"""【角色】标书模板表格智能打标专家
-
-【任务】接收按|分隔符序列化的表格文本，自主判断表格类型：静态表单 / 动态列表。参考【表格前文背景】，为表格打标，仅处理表格内容。
-
-【判断规则】
-1. 静态表单：人员信息、企业资质、固定填报项，特征为属性名+单一项填空；
-2. 动态列表：业绩清单、人员名录、设备清单，特征为顶部统一表头、下方多行重复空白行。
-
-【输入】
-=== 表格前文背景（仅参考，禁止修改、禁止输出） ===
-{upper_context}
-=== 待打标表格（|分隔序列化） ===
-{serialized_table}
-
-【打标规则】
-1. 静态表单：所有[空]逐一替换为独立业务标签{{{{字段名}}}}，保留所有行列结构；
-2. 动态列表：仅保留表头和第一行空白位，删除后续所有重复空行；
-   在首行添加docxtpl循环语法：{{% tr for item in 列表名称 %}}
-   单元格使用泛型标签：{{{{item.字段名}}}}。
-3. 绝对禁止生成如 {{{{地址}}}}、{{{{姓名}}}} 这样指代不明的标签！你必须结合前文背景（如标题、业务场景），生成高度具体的标签（如 {{{{投标人单位地址}}}}、{{{{项目负责人姓名}}}}）。
-
-【示例】
-输入：
-=== 表格前文背景（仅参考，禁止修改、禁止输出） ===
-历史业绩表格
-=== 待打标表格（|分隔序列化） ===
-| 项目名称 | 建设单位 | 合同金额 |
-| [空] | [空] | [空] |
-| [空] | [空] | [空] |
-
-输出：
-| 项目名称 | 建设单位 | 合同金额 |
-| {{% tr for item in 历史业绩列表 %}}{{{{item.项目名称}}}} | {{{{item.建设单位}}}} | {{{{item.合同金额}}}} |
-
-【输出要求】
-1. 严格保留原有|分隔符，仅替换[空]、增减空行，不改动原有文字和顺序。
-2. 只输出打标后的表格文本，禁止输出前文、解释、代码块！"""
-
-    system_prompt = "你是表格打标工具，只输出打标后的表格文本。标签必须高度具体，禁止使用泛标签。"
-    return call_kimi_api(prompt, system_prompt, max_tokens=4096)
+    # 从外部文件加载提示词
+    user_prompt, system_prompt = PromptManager.get(
+        'tag_table',
+        upper_context=upper_context,
+        serialized_table=serialized_table
+    )
+    return call_kimi_api(user_prompt, system_prompt, max_tokens=4096)
 
 
 def call_kimi_match_info(tags: List[str], company_info: str) -> Dict[str, Any]:
@@ -840,55 +825,15 @@ def call_kimi_match_info(tags: List[str], company_info: str) -> Dict[str, Any]:
     for batch_start in range(0, len(tags), batch_size):
         batch_tags = tags[batch_start:batch_start + batch_size]
 
-        prompt = f"""【角色】你是一名专业的企业信息匹配专家，精通投标文件信息提取。
-
-【输入】
-1. 标签列表:{json.dumps(batch_tags, ensure_ascii=False, indent=2)}
-2. 企业基础信息文本
-
-【企业信息】：
-{company_info[:5000]}
-
-【任务】请在"企业基础信息文本"中，为"标签列表"里的每一个标签寻找最匹配的具体信息。
-
-【匹配规则 - 必须严格遵守】
-1. 标签名称包含完整语义，需要精确匹配：
-   - "投标人单位名称" → 找"企业名称"对应的值
-   - "法定代表人姓名" → 找"法定代表人"下的"姓名"值
-   - "项目负责人姓名" → 找"项目负责人"下的"姓名"值
-   - "联系人电话" → 找"授权委托代理人"下的"联系电话"值
-   - "投标日期年/月/日" → 找"投标日期"对应的年/月/日
-
-2. 对于日期类标签，提取对应日期的数字部分：
-   - "投标日期年" → "2026"
-   - "投标日期月" → "05"
-   - "投标日期日" → "09"
-
-3. 对于签字盖章类标签，返回"[需签字]"或"[需盖章]"
-
-4. 如果企业信息中找不到该标签对应的内容，Value 请返回"待补全"
-
-5. 不要编造信息，必须基于提供的企业信息文本
-
-【特殊说明：列表类型】
-当你看到标签包含"列表"、"业绩"、"人员"等关键字时，说明这是一组列表数据。
-请在企业信息中寻找所有符合条件的项目，提取完整的列表，输出成 JSON 数组形式。
-
-【输出格式】
-直接返回JSON对象，不要输出任何说明或代码块标记：
-{{
-  "投标人单位名称": "江苏华宇市政建设集团有限公司",
-  "法定代表人姓名": "陈铭宇",
-  "项目负责人姓名": "周建峰",
-  "投标日期年": "2026",
-  "投标日期月": "05",
-  "投标日期日": "09"
-}}"""
-
-        system_prompt = "你是数据匹配工具，只输出JSON，不要输出代码块标记。"
+        # 从外部文件加载提示词
+        user_prompt, system_prompt = PromptManager.get(
+            'match_info',
+            tags_json=json.dumps(batch_tags, ensure_ascii=False, indent=2),
+            company_info=company_info[:5000]
+        )
 
         try:
-            result = call_kimi_api(prompt, system_prompt, max_tokens=8192)
+            result = call_kimi_api(user_prompt, system_prompt, max_tokens=8192)
 
             # 清理并解析JSON
             result = re.sub(r'^```json\s*', '', result)
