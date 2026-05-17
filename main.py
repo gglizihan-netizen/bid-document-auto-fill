@@ -52,14 +52,28 @@ LOG_DIR.mkdir(exist_ok=True)
 # 初始化 Kimi 客户端
 client = OpenAI(api_key=KIMI_API_KEY, base_url=KIMI_BASE_URL)
 
+# 自定义日志Formatter，确保长内容完整输出
+class FullLengthFormatter(logging.Formatter):
+    """自定义Formatter，确保日志内容完整输出不被截断"""
+    def format(self, record):
+        # 移除默认的70字符行长度限制
+        self._style._fmt = '%(asctime)s - %(levelname)s - %(message)s'
+        self._fmt = '%(asctime)s - %(levelname)s - %(message)s'
+        return super().format(record)
+
 # 设置日志
+file_handler = logging.FileHandler(LOG_DIR / 'app.log', encoding='utf-8')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(FullLengthFormatter())
+
+stream_handler = logging.StreamHandler()
+stream_handler.setLevel(logging.INFO)
+stream_handler.setFormatter(FullLengthFormatter())
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_DIR / 'app.log', encoding='utf-8'),
-        logging.StreamHandler()
-    ]
+    handlers=[file_handler, stream_handler]
 )
 logger = logging.getLogger(__name__)
 
@@ -862,8 +876,27 @@ def call_kimi_match_info(tags: List[str], company_info: str) -> Dict[str, Any]:
     batch_size = 60
     all_results = {}
 
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info("【Step 5 日志】企业信息匹配 - 完整提示词与返回结果")
+    logger.info("=" * 70)
+    logger.info(f"待匹配标签总数: {len(tags)}")
+    logger.info(f"企业信息长度: {len(company_info)} 字符")
+    logger.info(f"企业信息预览: {company_info[:500]}...")
+    logger.info("")
+
     for batch_start in range(0, len(tags), batch_size):
         batch_tags = tags[batch_start:batch_start + batch_size]
+        batch_num = batch_start // batch_size + 1
+        total_batches = (len(tags) + batch_size - 1) // batch_size
+
+        logger.info("")
+        logger.info("-" * 70)
+        logger.info(f"【批次 {batch_num}/{total_batches}】")
+        logger.info("-" * 70)
+        logger.info(f"本批次标签数: {len(batch_tags)}")
+        logger.info(f"标签列表: {batch_tags}")
+        logger.info("")
 
         # 从外部文件加载提示词
         user_prompt, system_prompt = PromptManager.get(
@@ -872,19 +905,48 @@ def call_kimi_match_info(tags: List[str], company_info: str) -> Dict[str, Any]:
             company_info=company_info[:5000]
         )
 
+        # 记录完整的 System Prompt
+        logger.info("【完整 System Prompt】")
+        logger.info("-" * 40)
+        logger.info(system_prompt)
+        logger.info("-" * 40)
+        logger.info("")
+
+        # 记录完整的 User Prompt
+        logger.info("【完整 User Prompt】")
+        logger.info("-" * 40)
+        logger.info(user_prompt)
+        logger.info("-" * 40)
+        logger.info("")
+
         try:
             result = call_kimi_api(user_prompt, system_prompt, max_tokens=8192)
 
+            # 记录模型原始返回结果
+            logger.info("【模型原始返回结果】")
+            logger.info("-" * 40)
+            logger.info(result)
+            logger.info("-" * 40)
+            logger.info("")
+
             # 清理并解析JSON
-            result = re.sub(r'^```json\s*', '', result)
-            result = re.sub(r'^```\s*', '', result)
-            result = re.sub(r'```\s*$', '', result)
+            result_clean = result
+            result_clean = re.sub(r'^```json\s*', '', result_clean)
+            result_clean = re.sub(r'^```\s*', '', result_clean)
+            result_clean = re.sub(r'```\s*$', '', result_clean)
 
-            json_match = re.search(r'\{[\s\S]*\}', result)
+            json_match = re.search(r'\{[\s\S]*\}', result_clean)
             if json_match:
-                result = json_match.group()
+                result_clean = json_match.group()
 
-            parsed = json.loads(result)
+            parsed = json.loads(result_clean)
+
+            # 记录解析后的 JSON 结果
+            logger.info("【解析后的 JSON 结果】")
+            logger.info("-" * 40)
+            logger.info(json.dumps(parsed, ensure_ascii=False, indent=2))
+            logger.info("-" * 40)
+            logger.info("")
 
             # 确保所有标签都在结果中
             for tag in batch_tags:
@@ -894,8 +956,12 @@ def call_kimi_match_info(tags: List[str], company_info: str) -> Dict[str, Any]:
 
             all_results.update(parsed)
 
+            logger.info(f"批次 {batch_num} 完成，成功匹配数: {sum(1 for v in parsed.values() if v and v != '待补全')}")
+
         except Exception as e:
-            logger.error(f"信息匹配失败: {e}")
+            logger.error(f"批次 {batch_num} 信息匹配失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             for tag in batch_tags:
                 all_results[tag] = "待补全"
 
@@ -903,6 +969,25 @@ def call_kimi_match_info(tags: List[str], company_info: str) -> Dict[str, Any]:
     for tag in all_results:
         if ('签字' in tag or '盖章' in tag) and all_results[tag] == "待补全":
             all_results[tag] = f"[需{tag}]"
+
+    # 记录最终匹配结果汇总
+    matched_count = sum(1 for v in all_results.values() if v and v != "待补全")
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info("【匹配结果汇总】")
+    logger.info("=" * 70)
+    logger.info(f"总标签数: {len(all_results)}")
+    logger.info(f"成功匹配: {matched_count}")
+    logger.info(f"待补全: {len(all_results) - matched_count}")
+    logger.info(f"匹配率: {matched_count * 100 // len(all_results) if all_results else 0}%")
+    logger.info("")
+    logger.info("【完整匹配结果】")
+    logger.info("-" * 40)
+    for tag, value in all_results.items():
+        logger.info(f"  {tag}: {value}")
+    logger.info("-" * 40)
+    logger.info("=" * 70)
+    logger.info("")
 
     return all_results
 
